@@ -26,6 +26,7 @@ class NotificationStatus(Enum):
 class Query:
     id: int | None
     keyword: str
+    description: str | None
     include_terms: list[str]
     exclude_terms: list[str]
     min_price: float | None
@@ -87,6 +88,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS queries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     keyword TEXT NOT NULL,
+    description TEXT,
     include_terms TEXT DEFAULT '[]',
     exclude_terms TEXT DEFAULT '[]',
     min_price REAL,

@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from db.models import Query
 log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are an AI that determines if a product listing is relevant to a search query.
-Analyze the listing title, price, and context to determine relevance.
+Analyze the listing title, price, images, and context to determine relevance.
 You MUST respond with valid JSON only, no markdown or extra text.
 Response format: {"relevant": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}"""
 
@@ -34,7 +35,7 @@ class AIVerifier:
                     "Authorization": f"Bearer {settings.nvidia_api_key}",
                     "Content-Type": "application/json",
                 },
-                timeout=60.0,
+                timeout=120.0,
             )
         return self._client
 
@@ -43,13 +44,34 @@ class AIVerifier:
             await self._client.aclose()
             self._client = None
 
-    async def verify(self, listing: Listing, query: Query) -> VerificationResult | None:
+    async def _fetch_image_base64(self, url: str) -> str | None:
+        try:
+            client = await self._get_client()
+            resp = await client.get(url, timeout=30.0)
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "image/jpeg")
+            base64_data = base64.b64encode(resp.content).decode("utf-8")
+            return f"data:{content_type};base64,{base64_data}"
+        except Exception as e:
+            log.warning(f"Failed to fetch image {url}: {e}")
+            return None
+
+    async def verify(
+        self,
+        listing: Listing,
+        query: Query,
+        image_urls: list[str] | None = None,
+    ) -> VerificationResult | None:
         if not query.ai_enabled:
             return VerificationResult(relevant=True, confidence=1.0, reason="AI disabled")
 
         client = await self._get_client()
 
-        user_prompt = f"""Search query: "{query.keyword}"
+        description_part = ""
+        if query.description:
+            description_part = f"\nUser is looking for: {query.description}"
+
+        user_prompt = f"""Search query: "{query.keyword}"{description_part}
 Include terms: {query.include_terms or "none"}
 Exclude terms: {query.exclude_terms or "none"}
 Price range: {query.min_price or "any"} - {query.max_price or "any"}
@@ -61,12 +83,41 @@ Listing:
 
 Is this listing relevant to the search query?"""
 
-        payload = {
-            "model": settings.nvidia_model,
-            "messages": [
+        use_vision = bool(image_urls)
+        model = settings.nvidia_vision_model if use_vision else settings.nvidia_model
+
+        if use_vision and image_urls:
+            content_parts: list[dict] = [{"type": "text", "text": user_prompt}]
+            
+            for url in image_urls[:3]:
+                image_data = await self._fetch_image_base64(url)
+                if image_data:
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": image_data}
+                    })
+            
+            if len(content_parts) == 1:
+                use_vision = False
+                model = settings.nvidia_model
+                messages = [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ]
+            else:
+                messages = [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": content_parts},
+                ]
+        else:
+            messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
-            ],
+            ]
+
+        payload = {
+            "model": model,
+            "messages": messages,
             "temperature": 0.1,
             "max_tokens": 200,
         }

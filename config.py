@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     # NVIDIA NIM
     nvidia_api_key: str
     nvidia_model: str = "meta/llama-3.1-70b-instruct"
+    nvidia_vision_model: str = "meta/llama-3.2-90b-vision-instruct"
     nvidia_endpoint: str = "https://integrate.api.nvidia.com/v1/chat/completions"
 
     # Goofish

@@ -19,6 +19,7 @@ class QueryCommands(app_commands.Group):
     @app_commands.command(name="add", description="Add a new watch query")
     @app_commands.describe(
         keyword="Search keyword",
+        description="Description of what you're looking for (helps AI understand)",
         include="Comma-separated terms that must appear",
         exclude="Comma-separated terms to exclude",
         min_price="Minimum price filter",
@@ -30,6 +31,7 @@ class QueryCommands(app_commands.Group):
         self,
         interaction: discord.Interaction,
         keyword: str,
+        description: str | None = None,
         include: str | None = None,
         exclude: str | None = None,
         min_price: float | None = None,
@@ -48,6 +50,7 @@ class QueryCommands(app_commands.Group):
 
         query_id = await store.add_query(
             keyword=keyword,
+            description=description,
             include_terms=include_terms,
             exclude_terms=exclude_terms,
             min_price=min_price,

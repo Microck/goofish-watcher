@@ -27,7 +27,14 @@ class Store:
         self._connection = await aiosqlite.connect(self.db_path)
         self._connection.row_factory = aiosqlite.Row
         await self._connection.executescript(SCHEMA)
+        await self._migrate()
         await self._connection.commit()
+
+    async def _migrate(self) -> None:
+        cursor = await self.conn.execute("PRAGMA table_info(queries)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "description" not in columns:
+            await self.conn.execute("ALTER TABLE queries ADD COLUMN description TEXT")
 
     async def close(self) -> None:
         if self._connection:
@@ -45,6 +52,7 @@ class Store:
     async def add_query(
         self,
         keyword: str,
+        description: str | None = None,
         include_terms: list[str] | None = None,
         exclude_terms: list[str] | None = None,
         min_price: float | None = None,
@@ -57,12 +65,13 @@ class Store:
         cursor = await self.conn.execute(
             """
             INSERT INTO queries
-            (keyword, include_terms, exclude_terms, min_price, max_price,
+            (keyword, description, include_terms, exclude_terms, min_price, max_price,
              interval_minutes, ai_enabled, ai_threshold, enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             """,
             (
                 keyword,
+                description,
                 json.dumps(include_terms or []),
                 json.dumps(exclude_terms or []),
                 min_price,
@@ -95,7 +104,7 @@ class Store:
             return False
 
         allowed = {
-            "keyword", "include_terms", "exclude_terms", "min_price", "max_price",
+            "keyword", "description", "include_terms", "exclude_terms", "min_price", "max_price",
             "interval_minutes", "ai_enabled", "ai_threshold", "enabled"
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
@@ -131,6 +140,7 @@ class Store:
         return Query(
             id=row["id"],
             keyword=row["keyword"],
+            description=row["description"],
             include_terms=json.loads(row["include_terms"]),
             exclude_terms=json.loads(row["exclude_terms"]),
             min_price=row["min_price"],

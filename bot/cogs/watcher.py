@@ -197,7 +197,11 @@ class WatcherCog:
                     listing.seller_id,
                 )
 
-                ai_result = await ai_verifier.verify(listing, query)
+                ai_result = await ai_verifier.verify(
+                    listing,
+                    query,
+                    image_urls=[listing.image_url] if listing.image_url else None,
+                )
 
                 if ai_result and query.ai_enabled:
                     if ai_result.confidence < query.ai_threshold:
