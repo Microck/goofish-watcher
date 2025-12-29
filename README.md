@@ -37,22 +37,6 @@ python -m bot.main
 - **health monitoring** - auto-alerts for auth failures, scan errors
 - **sqlite persistence** - queries, listings, scan history stored locally
 
-### how it works
-
-```mermaid
-flowchart LR
-    A[Discord Command] --> B[Query Store]
-    B --> C[Scheduler]
-    C --> D[Scanner]
-    D --> E[Goofish API]
-    E --> F[Parser]
-    F --> G[Filter]
-    G --> H[AI Verifier]
-    H --> I[Deduplicator]
-    I --> J[Notifier]
-    J --> K[Discord DM]
-```
-
 ### requirements
 
 | Requirement | Description |
