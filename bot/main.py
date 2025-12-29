@@ -8,6 +8,7 @@ from discord import app_commands
 
 from bot.cogs.watcher import WatcherCog
 from bot.commands.alert import AlertCommands
+from bot.commands.logs import LogsCommands
 from bot.commands.query import QueryCommands
 from bot.commands.stats import StatsCommands
 from config import settings
@@ -53,6 +54,9 @@ class GoofishBot(discord.Client):
 
         stats_commands = StatsCommands(self)
         self.tree.add_command(stats_commands)
+
+        logs_commands = LogsCommands(self)
+        self.tree.add_command(logs_commands)
 
         self.watcher = WatcherCog(self)
         await self.watcher.start()
