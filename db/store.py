@@ -287,6 +287,14 @@ class Store:
         rows = await cursor.fetchall()
         return [self._row_to_scan(row) for row in rows]
 
+    async def get_all_recent_scans(self, limit: int = 10) -> list[Scan]:
+        cursor = await self.conn.execute(
+            "SELECT * FROM scans ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_scan(row) for row in rows]
+
     def _row_to_scan(self, row: aiosqlite.Row) -> Scan:
         return Scan(
             id=row["id"],

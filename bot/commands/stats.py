@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 import discord
 from discord import app_commands
 
+from db.models import ScanStatus
 from db.store import store
 
 if TYPE_CHECKING:
@@ -123,3 +124,62 @@ class StatsCommands(app_commands.Group):
             await interaction.followup.send(embed=embed)
         except discord.NotFound:
             pass  # Interaction expired
+
+    @app_commands.command(name="logs", description="Show recent scan logs")
+    @app_commands.describe(
+        query_id="Query ID (optional, shows all if not specified)",
+        limit="Number of scans to show (default: 10)",
+    )
+    async def logs(
+        self,
+        interaction: discord.Interaction,
+        query_id: int | None = None,
+        limit: int = 10,
+    ) -> None:
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.NotFound:
+            return
+
+        limit = min(limit, 25)
+
+        if query_id:
+            query = await store.get_query(query_id)
+            if not query:
+                try:
+                    await interaction.followup.send(f"Query #{query_id} not found")
+                except discord.NotFound:
+                    pass
+                return
+            scans = await store.get_recent_scans(query_id, limit=limit)
+            title = f"Recent Scans: {query.keyword}"
+        else:
+            scans = await store.get_all_recent_scans(limit=limit)
+            title = "Recent Scans (All Queries)"
+
+        if not scans:
+            try:
+                await interaction.followup.send("No scans found")
+            except discord.NotFound:
+                pass
+            return
+
+        lines = []
+        for s in scans:
+            status_emoji = "✅" if s.status == ScanStatus.COMPLETED else "❌" if s.status == ScanStatus.FAILED else "🔄"
+            time_str = s.started_at.strftime("%m/%d %H:%M")
+            line = f"`{time_str}` {status_emoji} Q#{s.query_id}: {s.listings_found} found, {s.listings_new} new, {s.listings_notified} notified"
+            if s.error_message:
+                line += f"\n└ ⚠️ {s.error_message[:50]}"
+            lines.append(line)
+
+        embed = discord.Embed(
+            title=title,
+            description="\n".join(lines),
+            color=discord.Color.blue(),
+        )
+
+        try:
+            await interaction.followup.send(embed=embed)
+        except discord.NotFound:
+            pass
