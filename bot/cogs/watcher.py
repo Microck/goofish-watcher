@@ -204,8 +204,8 @@ class WatcherCog:
                 )
 
                 if ai_result and query.ai_enabled:
-                    if ai_result.confidence < query.ai_threshold:
-                        log.debug(f"Skipping {listing.id}: confidence {ai_result.confidence}")
+                    if not ai_result.relevant or ai_result.confidence < query.ai_threshold:
+                        log.debug(f"Skipping {listing.id}: relevant={ai_result.relevant}, confidence={ai_result.confidence}")
                         continue
 
                 notification_id = await store.create_notification(
