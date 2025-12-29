@@ -1,10 +1,10 @@
 <p align="center">
   <a href="https://github.com/Microck/goofish-watcher">
-    <img src="logo.png" alt="Goofish Watcher" width="200">
+    <img src="logo.png" alt="Goofish Watcher" width="100">
   </a>
 </p>
 
-<p align="center">Discord bot that monitors Xianyu/Goofish for listings and sends DM alerts</p>
+<p align="center">discord bot that monitors Xianyu/Goofish for listings and sends DM alerts</p>
 
 <p align="center">
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green.svg" /></a>
