@@ -1,0 +1,20 @@
+[Unit]
+Description=Goofish Watcher Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=goofish
+Group=goofish
+WorkingDirectory=/opt/goofish-watcher
+ExecStart=/opt/goofish-watcher/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=goofish-watcher
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+services:
+  goofish-watcher:
+    build: .
+    container_name: goofish-watcher
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./cookies.json:/app/cookies.json:ro
+    environment:
+      - DATABASE_PATH=/app/data/goofish.db
+      - GOOFISH_COOKIES_JSON_PATH=/app/cookies.json

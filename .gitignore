@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Data
+*.db
+data/
+logs/
+
+# Auth/Session
+cookies.json
+cookies_backup.json
+chrome_profile/
+
+# IDE
+.vscode/
+.idea/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Cache
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Debug artifacts
+debug_*.png
+web_response.html
+api_response.json
+
+# Windows artifacts
+nul
+Thumbs.db
