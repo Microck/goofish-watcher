@@ -1,40 +1,69 @@
-# Goofish Watcher
+<p align="center">
+  <a href="https://github.com/Microck/goofish-watcher">
+    <img src="logo.png" alt="Goofish Watcher" width="200">
+  </a>
+</p>
 
-Discord bot that monitors Xianyu/Goofish (Chinese secondhand marketplace) for configurable search queries, filters listings using AI verification, and sends notifications via Discord DM.
+<p align="center">Discord bot that monitors Xianyu/Goofish for listings and sends DM alerts</p>
 
-## Features
+<p align="center">
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green.svg" /></a>
+  <img alt="python" src="https://img.shields.io/badge/python-3.11+-blue.svg" />
+  <img alt="discord.py" src="https://img.shields.io/badge/discord.py-2.0+-7289da.svg" />
+</p>
 
-- **Configurable Queries**: Keyword search with include/exclude term filters
-- **Price Filtering**: Min/max price range support
-- **AI Verification**: NVIDIA NIM API filters irrelevant listings
-- **Discord Notifications**: Real-time DM alerts with listing details
-- **Deduplication**: Won't notify same listing twice
-- **Flexible Intervals**: 60/180/360 minute scan cycles
-- **Health Monitoring**: Auto-alerts for auth failures, scan errors
-- **SQLite Persistence**: Queries, listings, scan history stored locally
+---
 
-## Quick Start
+### tl;dr
 
 ```bash
-git clone https://github.com/youruser/goofish-watcher.git
-cd goofish-watcher
+# docker (recommended)
+docker compose up -d
+
+# manual
 pip install -e .
-cp .env.example .env
-# Edit .env with credentials
+cp .env.example .env  # edit with credentials
 python -m bot.main
 ```
 
-See [USAGE.md](USAGE.md) for detailed setup and [DEPLOY.md](DEPLOY.md) for production deployment.
+### features
 
-## Requirements
+- **configurable queries** - keyword search with include/exclude term filters
+- **price filtering** - min/max price range support
+- **ai verification** - nvidia nim api filters irrelevant listings
+- **discord notifications** - real-time dm alerts with listing details
+- **deduplication** - won't notify same listing twice
+- **flexible intervals** - 60/180/360 minute scan cycles
+- **health monitoring** - auto-alerts for auth failures, scan errors
+- **sqlite persistence** - queries, listings, scan history stored locally
 
-- Python 3.11+
-- Discord bot token
-- NVIDIA NIM API key (for AI verification)
-- Goofish/Xianyu cookies
-- Google Chrome (Playwright uses it for browser automation)
+### how it works
 
-## Discord Commands
+```mermaid
+flowchart LR
+    A[Discord Command] --> B[Query Store]
+    B --> C[Scheduler]
+    C --> D[Scanner]
+    D --> E[Goofish API]
+    E --> F[Parser]
+    F --> G[Filter]
+    G --> H[AI Verifier]
+    H --> I[Deduplicator]
+    I --> J[Notifier]
+    J --> K[Discord DM]
+```
+
+### requirements
+
+| Requirement | Description |
+|-------------|-------------|
+| Python 3.11+ | Runtime |
+| Discord bot token | Bot authentication |
+| NVIDIA NIM API key | AI verification |
+| Goofish cookies | Marketplace authentication |
+| Chromium | Browser automation (bundled in Docker) |
+
+### commands
 
 | Command | Description |
 |---------|-------------|
@@ -49,35 +78,44 @@ See [USAGE.md](USAGE.md) for detailed setup and [DEPLOY.md](DEPLOY.md) for produ
 | `/stats overview` | Global statistics |
 | `/stats health` | System health check |
 
-## Project Structure
+### project structure
 
 ```
 goofish-watcher/
 ├── bot/
-│   ├── main.py              # Discord client entry
-│   ├── commands/            # Slash commands (query, alert, stats)
-│   └── cogs/watcher.py      # Scheduler + scan logic
+│   ├── main.py              # discord client entry
+│   ├── commands/            # slash commands (query, alert, stats)
+│   └── cogs/watcher.py      # scheduler + scan logic
 ├── core/
-│   ├── scanner.py           # Playwright-based Goofish scraper
-│   ├── parser.py            # Listing normalization
-│   ├── filter.py            # Price/term filters
-│   ├── verifier.py          # NVIDIA NIM AI verification
-│   └── notifier.py          # Discord DM sender
+│   ├── scanner.py           # playwright-based goofish scraper
+│   ├── parser.py            # listing normalization
+│   ├── filter.py            # price/term filters
+│   ├── verifier.py          # nvidia nim ai verification
+│   └── notifier.py          # discord dm sender
 ├── db/
-│   ├── models.py            # Data models
-│   └── store.py             # SQLite CRUD operations
+│   ├── models.py            # data models
+│   └── store.py             # sqlite crud operations
 ├── config.py                # pydantic-settings config
-├── cookies.json             # Goofish auth cookies
 ├── Dockerfile
 ├── docker-compose.yml
-└── goofish-watcher.service  # Systemd unit file
+└── goofish-watcher.service  # systemd unit file
 ```
 
-## Documentation
+### troubleshooting
 
-- [USAGE.md](USAGE.md) - Setup guide, configuration, commands
-- [DEPLOY.md](DEPLOY.md) - Production deployment (Docker, systemd, VPS)
+| Issue | Solution |
+|-------|----------|
+| Cookie expired | Re-export cookies from browser, update `cookies.json` |
+| No listings found | Check debug screenshots in `debug/`, verify cookies |
+| AI verification fails | Check NVIDIA NIM API key and quota |
+| Bot not responding | Verify `DISCORD_TOKEN` and bot permissions |
+| Docker ARM64 issues | Use provided Dockerfile with Chromium (not Chrome) |
 
-## License
+### documentation
+
+- [USAGE.md](USAGE.md) - setup guide, configuration, commands
+- [DEPLOY.md](DEPLOY.md) - production deployment (docker, systemd, vps)
+
+### license
 
 MIT
