@@ -1,10 +1,13 @@
 import json
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
 
 from config import settings
+
+log = logging.getLogger(__name__)
 from db.models import (
     SCHEMA,
     Label,
@@ -33,8 +36,35 @@ class Store:
     async def _migrate(self) -> None:
         cursor = await self.conn.execute("PRAGMA table_info(queries)")
         columns = {row[1] for row in await cursor.fetchall()}
-        if "description" not in columns:
-            await self.conn.execute("ALTER TABLE queries ADD COLUMN description TEXT")
+
+        new_columns = {
+            "queries": {
+                "free_shipping": "INTEGER DEFAULT 0",
+                "new_publish_hours": "INTEGER",
+                "region": "TEXT",
+                "cron_expression": "TEXT",
+                "account_state_file": "TEXT",
+            },
+            "listings_seen": {
+                "seller_rating": "REAL DEFAULT 0.0",
+                "seller_registration_days": "INTEGER DEFAULT 0",
+                "wants_count": "INTEGER DEFAULT 0",
+                "original_price": "TEXT",
+                "tags": "TEXT",
+            },
+            "notifications": {
+                "channels_sent": "TEXT",
+            },
+        }
+
+        for table, cols in new_columns.items():
+            table_cursor = await self.conn.execute(f"PRAGMA table_info({table})")
+            existing_columns = {row[1] for row in await table_cursor.fetchall()}
+
+            for col, default_val in cols.items():
+                if col not in existing_columns:
+                    await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {default_val}")
+                    log.info(f"Added migration: {table}.{col}")
 
     async def close(self) -> None:
         if self._connection:
@@ -60,14 +90,20 @@ class Store:
         interval_minutes: int = 60,
         ai_enabled: bool = True,
         ai_threshold: float = 0.7,
+        free_shipping: bool = False,
+        new_publish_hours: int | None = None,
+        region: str | None = None,
+        cron_expression: str | None = None,
+        account_state_file: str | None = None,
     ) -> int:
         now = datetime.utcnow().isoformat()
         cursor = await self.conn.execute(
             """
             INSERT INTO queries
             (keyword, description, include_terms, exclude_terms, min_price, max_price,
-             interval_minutes, ai_enabled, ai_threshold, enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+             interval_minutes, ai_enabled, ai_threshold, enabled, free_shipping,
+             new_publish_hours, region, cron_expression, account_state_file, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 keyword,
@@ -79,6 +115,11 @@ class Store:
                 interval_minutes,
                 int(ai_enabled),
                 ai_threshold,
+                int(free_shipping),
+                new_publish_hours,
+                region,
+                cron_expression,
+                account_state_file,
                 now,
                 now,
             ),
@@ -104,8 +145,21 @@ class Store:
             return False
 
         allowed = {
-            "keyword", "description", "include_terms", "exclude_terms", "min_price", "max_price",
-            "interval_minutes", "ai_enabled", "ai_threshold", "enabled"
+            "keyword",
+            "description",
+            "include_terms",
+            "exclude_terms",
+            "min_price",
+            "max_price",
+            "interval_minutes",
+            "ai_enabled",
+            "ai_threshold",
+            "enabled",
+            "free_shipping",
+            "new_publish_hours",
+            "region",
+            "cron_expression",
+            "account_state_file",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
@@ -119,15 +173,15 @@ class Store:
             updates["ai_enabled"] = int(updates["ai_enabled"])
         if "enabled" in updates:
             updates["enabled"] = int(updates["enabled"])
+        if "free_shipping" in updates:
+            updates["free_shipping"] = int(updates["free_shipping"])
 
         updates["updated_at"] = datetime.utcnow().isoformat()
 
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [query_id]
 
-        cursor = await self.conn.execute(
-            f"UPDATE queries SET {set_clause} WHERE id = ?", values
-        )
+        cursor = await self.conn.execute(f"UPDATE queries SET {set_clause} WHERE id = ?", values)
         await self.conn.commit()
         return cursor.rowcount > 0
 
@@ -141,14 +195,19 @@ class Store:
             id=row["id"],
             keyword=row["keyword"],
             description=row["description"],
-            include_terms=json.loads(row["include_terms"]),
-            exclude_terms=json.loads(row["exclude_terms"]),
+            include_terms=json.loads(row["include_terms"] or "[]"),
+            exclude_terms=json.loads(row["exclude_terms"] or "[]"),
             min_price=row["min_price"],
             max_price=row["max_price"],
             interval_minutes=row["interval_minutes"],
             ai_enabled=bool(row["ai_enabled"]),
             ai_threshold=row["ai_threshold"],
             enabled=bool(row["enabled"]),
+            free_shipping=bool(row.get("free_shipping", 0)),
+            new_publish_hours=row.get("new_publish_hours"),
+            region=row.get("region"),
+            cron_expression=row.get("cron_expression"),
+            account_state_file=row.get("account_state_file"),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
@@ -272,8 +331,13 @@ class Store:
             WHERE id = ?
             """,
             (
-                status.value, listings_found, listings_new,
-                listings_notified, error_message, now, scan_id
+                status.value,
+                listings_found,
+                listings_new,
+                listings_notified,
+                error_message,
+                now,
+                scan_id,
             ),
         )
         await self.conn.commit()

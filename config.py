@@ -14,11 +14,16 @@ class Settings(BaseSettings):
     )
 
     # Discord
-    discord_bot_token: str
-    discord_user_id: int
+    discord_bot_token: str = ""
+    discord_user_id: int = 0
 
-    # NVIDIA NIM
-    nvidia_api_key: str
+    # OpenAI-compatible API (primary)
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model_name: str = "gpt-4o"
+
+    # NVIDIA NIM (fallback)
+    nvidia_api_key: str = ""
     nvidia_model: str = "meta/llama-3.1-70b-instruct"
     nvidia_vision_model: str = "meta/llama-3.2-90b-vision-instruct"
     nvidia_endpoint: str = "https://integrate.api.nvidia.com/v1/chat/completions"
@@ -40,6 +45,36 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "INFO"
+
+    # Multi-channel notifications (optional)
+    ntfy_topic_url: str = ""
+    bark_url: str = ""
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    wx_bot_url: str = ""
+    webhook_url: str = ""
+    webhook_method: str = "POST"
+    webhook_headers: str = "{}"
+    webhook_body: str = "{}"
+    webhook_content_type: str = "JSON"
+
+    # Account & proxy rotation
+    proxy_rotation_enabled: bool = False
+    proxy_pool: str = ""
+    proxy_rotation_mode: str = "per_task"
+    proxy_rotation_retry_limit: int = 2
+    proxy_blacklist_ttl: int = 300
+    account_rotation_enabled: bool = False
+    account_rotation_mode: str = "per_task"
+    account_rotation_state_dir: str = "./state"
+    account_rotation_retry_limit: int = 2
+    account_blacklist_ttl: int = 300
+
+    # Web UI (optional)
+    enable_web_ui: bool = False
+    web_port: int = 8000
+    web_username: str = "admin"
+    web_password: str = "admin123"
 
     @property
     def cookies(self) -> str | None:

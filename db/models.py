@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
@@ -24,64 +24,75 @@ class NotificationStatus(Enum):
 
 @dataclass
 class Query:
-    id: int | None
-    keyword: str
-    description: str | None
-    include_terms: list[str]
-    exclude_terms: list[str]
-    min_price: float | None
-    max_price: float | None
-    interval_minutes: int
-    ai_enabled: bool
-    ai_threshold: float
-    enabled: bool
-    created_at: datetime
-    updated_at: datetime
+    id: int | None = None
+    keyword: str = field(default="")
+    description: str | None = None
+    include_terms: list = field(default_factory=list)
+    exclude_terms: list = field(default_factory=list)
+    min_price: float | None = None
+    max_price: float | None = None
+    interval_minutes: int = 60
+    ai_enabled: bool = True
+    ai_threshold: float = 0.7
+    enabled: bool = True
+    free_shipping: bool = False
+    new_publish_hours: int | None = None
+    region: str | None = None
+    cron_expression: str | None = None
+    account_state_file: str | None = None
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
 
 
 @dataclass
 class ListingSeen:
-    id: int | None
-    query_id: int
-    listing_id: str
-    title: str
-    price: float
-    seller_id: str
-    first_seen_at: datetime
-    last_seen_at: datetime
+    id: int | None = None
+    query_id: int = 0
+    listing_id: str = ""
+    title: str = ""
+    price: float = 0.0
+    seller_id: str = ""
+    first_seen_at: datetime = field(default_factory=datetime.utcnow)
+    last_seen_at: datetime = field(default_factory=datetime.utcnow)
+    seller_rating: float = 0.0
+    seller_registration_days: int = 0
+    wants_count: int = 0
+    original_price: str | None = None
+    tags: str | None = None
 
 
 @dataclass
 class Notification:
-    id: int | None
-    query_id: int
-    listing_id: str
-    status: NotificationStatus
-    ai_relevance: float | None
-    ai_reason: str | None
-    sent_at: datetime | None
-    created_at: datetime
+    id: int | None = None
+    query_id: int = 0
+    listing_id: str = ""
+    status: NotificationStatus = NotificationStatus.PENDING
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    ai_relevance: float | None = None
+    ai_reason: str | None = None
+    sent_at: datetime | None = None
+    channels_sent: str | None = None
 
 
 @dataclass
 class Scan:
-    id: int | None
-    query_id: int
-    status: ScanStatus
-    listings_found: int
-    listings_new: int
-    listings_notified: int
-    error_message: str | None
-    started_at: datetime
-    finished_at: datetime | None
+    id: int | None = None
+    query_id: int = 0
+    status: ScanStatus = ScanStatus.PENDING
+    listings_found: int = 0
+    listings_new: int = 0
+    listings_notified: int = 0
+    error_message: str | None = None
+    started_at: datetime = field(default_factory=datetime.utcnow)
+    finished_at: datetime | None = None
 
 
 @dataclass
 class Label:
-    id: int | None
-    notification_id: int
-    label: str
-    created_at: datetime
+    id: int | None = None
+    notification_id: int = 0
+    label: str = ""
+    created_at: datetime = field(default_factory=datetime.utcnow)
 
 
 SCHEMA = """
@@ -97,6 +108,11 @@ CREATE TABLE IF NOT EXISTS queries (
     ai_enabled INTEGER DEFAULT 1,
     ai_threshold REAL DEFAULT 0.7,
     enabled INTEGER DEFAULT 1,
+    free_shipping INTEGER DEFAULT 0,
+    new_publish_hours INTEGER,
+    region TEXT,
+    cron_expression TEXT,
+    account_state_file TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -108,6 +124,11 @@ CREATE TABLE IF NOT EXISTS listings_seen (
     title TEXT NOT NULL,
     price REAL NOT NULL,
     seller_id TEXT NOT NULL,
+    seller_rating REAL DEFAULT 0.0,
+    seller_registration_days INTEGER DEFAULT 0,
+    wants_count INTEGER DEFAULT 0,
+    original_price TEXT,
+    tags TEXT,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     FOREIGN KEY (query_id) REFERENCES queries(id) ON DELETE CASCADE,
@@ -119,11 +140,11 @@ CREATE TABLE IF NOT EXISTS notifications (
     query_id INTEGER NOT NULL,
     listing_id TEXT NOT NULL,
     status TEXT DEFAULT 'pending',
+    created_at TEXT NOT NULL,
     ai_relevance REAL,
     ai_reason TEXT,
     sent_at TEXT,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (query_id) REFERENCES queries(id) ON DELETE CASCADE
+    channels_sent TEXT
 );
 
 CREATE TABLE IF NOT EXISTS scans (

@@ -4,10 +4,12 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote, urljoin
+from typing import Optional
+from urllib.parse import urlencode
 
-from playwright.async_api import async_playwright, BrowserContext
+from playwright.async_api import async_playwright, BrowserContext, Response
 
 from config import settings
 
@@ -15,10 +17,12 @@ log = logging.getLogger(__name__)
 
 SEARCH_URL = "https://www.goofish.com/search"
 BASE_URL = "https://www.goofish.com"
+API_SEARCH_URL = "h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search"
+API_DETAIL_URL = "h5api.m.goofish.com/h5/mtop.taobao.idle.pc.detail"
+API_RATINGS_URL = "h5api.m.goofish.com/h5/mtop.idle.web.trade.rate.list"
 
 
 def _detect_chrome_channel() -> str | None:
-    """Return 'chrome' if system Chrome is available, None otherwise (use bundled Chromium)."""
     if os.environ.get("USE_BUNDLED_CHROMIUM"):
         return None
     chrome_paths = [
@@ -28,7 +32,7 @@ def _detect_chrome_channel() -> str | None:
         shutil.which("chromium-browser"),
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        r"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     ]
     for path in chrome_paths:
         if path and Path(path).exists():
@@ -47,11 +51,18 @@ class RawListing:
     location: str
     post_time: str | None
     detail_url: str
+    original_price: str | None = None
+    wants_count: int | None = None
+    tags: list[str] = None
 
 
 class GoofishClient:
-    def __init__(self, cookies_path: str | None = None):
-        self.cookies_path = cookies_path or settings.goofish_cookies_json_path
+    def __init__(self, cookies_path: Optional[str] = None):
+        self.cookies_path = (
+            cookies_path or str(settings.goofish_cookies_json_path)
+            if settings.goofish_cookies_json_path
+            else None
+        )
         self._playwright = None
         self._context: BrowserContext | None = None
         self._lock = asyncio.Lock()
@@ -73,25 +84,29 @@ class GoofishClient:
             chrome_channel = _detect_chrome_channel()
             log.info(f"Using browser channel: {chrome_channel or 'bundled chromium'}")
 
-            self._context = await self._playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=True,
-                channel=chrome_channel,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
-                viewport={"width": 1920, "height": 1080},
-                locale="zh-CN",
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                ),
+            self._context = (
+                await self._playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=True,
+                    channel=chrome_channel,
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                    ],
+                    viewport={"width": 1920, "height": 1080},
+                    locale="zh-CN",
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                )
+                if chrome_channel
+                else None
             )
 
             cookies = self._load_cookies()
-            if cookies:
+            if cookies and self._context:
                 await self._context.add_cookies(cookies)
                 log.info(f"Loaded {len(cookies)} auth cookies")
 
@@ -103,7 +118,7 @@ class GoofishClient:
             self._profile_initialized = True
             return self._context
 
-    def _load_cookies(self) -> list[dict]:
+    def _load_cookies(self) -> list:
         if not self.cookies_path:
             return []
 
@@ -184,84 +199,58 @@ class GoofishClient:
             context = await self._ensure_browser()
             browser_page = context.pages[0] if context.pages else await context.new_page()
 
-            url = f"{SEARCH_URL}?q={quote(keyword)}"
+            search_results = []
+
+            async def handle_response(response: Response):
+                if API_SEARCH_URL in response.url:
+                    try:
+                        json_data = await response.json()
+                        from core.parsers import parse_search_results_json
+
+                        listings = await parse_search_results_json(json_data)
+                        search_results.extend(listings)
+                        log.info(f"API拦截: 捕获到 {len(listings)} 条商品数据")
+                    except Exception as e:
+                        log.error(f"Failed to parse API response: {e}", exc_info=True)
+
+            browser_page.on("response", handle_response)
+
+            params = {"q": keyword}
             if page > 1:
-                url += f"&page={page}"
+                params["page"] = str(page)
 
-            log.info(f"Searching: {url}")
+            log.info(f"Searching with API拦截: keyword={keyword}, page={page}")
 
-            await browser_page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(1)
-            await browser_page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await browser_page.wait_for_selector('a[href*="/item?id="]', timeout=15000)
-            await asyncio.sleep(1)
+            await browser_page.goto(
+                f"{SEARCH_URL}?{urlencode(params)}", wait_until="domcontentloaded", timeout=30000
+            )
+            await asyncio.sleep(3)
 
-            listings_data = await browser_page.evaluate("""
-                () => {
-                    const results = [];
-                    const links = document.querySelectorAll('a[href*="/item?id="]');
-                    
-                    for (const link of links) {
-                        const href = link.getAttribute('href');
-                        const idMatch = href.match(/id=(\d+)/);
-                        if (!idMatch) continue;
-                        
-                        const itemId = idMatch[1];
-                        const text = link.innerText || link.textContent || '';
-                        
-                        const priceMatch = text.match(/¥\s*([\d,.]+)/);
-                        const price = priceMatch ? priceMatch[1].replace(',', '') : '0';
-                        
-                        const img = link.querySelector('img');
-                        const imgSrc = img ? (img.src || img.dataset.src || '') : '';
-                        
-                        let title = text.split('¥')[0].trim();
-                        if (title.length > 100) {
-                            title = title.substring(0, 100);
-                        }
-                        
-                        const locationMatch = text.match(/(\d+人想要)?\s*([\u4e00-\u9fa5]{2,})\s*$/);
-                        const location = locationMatch ? locationMatch[2] : '';
-                        
-                        results.push({
-                            id: itemId,
-                            title: title,
-                            price: parseFloat(price) || 0,
-                            imageUrl: imgSrc,
-                            location: location,
-                            href: href,
-                        });
-                    }
-                    
-                    const seen = new Set();
-                    return results.filter(r => {
-                        if (seen.has(r.id)) return false;
-                        seen.add(r.id);
-                        return true;
-                    });
-                }
-            """)
-
-            log.info(f"Found {len(listings_data)} raw listings")
-
-            if not listings_data:
+            if not search_results:
                 screenshot_path = Path("debug_scan_empty.png")
                 await browser_page.screenshot(path=str(screenshot_path))
                 page_url = browser_page.url
-                log.warning(f"0 listings found! URL: {page_url}, screenshot saved to {screenshot_path}")
+                log.warning(
+                    f"0 listings found! URL: {page_url}, screenshot saved to {screenshot_path}"
+                )
 
             listings = []
-            for item in listings_data[:page_size]:
+            for item in search_results[:page_size]:
                 listing = RawListing(
-                    id=str(item["id"]),
-                    title=item["title"],
-                    price=float(item["price"]),
-                    image_url=item.get("imageUrl", ""),
-                    seller_id="",
-                    seller_name="",
-                    location=item.get("location", ""),
-                    post_time=None,
-                    detail_url=urljoin(BASE_URL, item["href"]),
+                    id=item.id,
+                    title=item.title,
+                    price=item.price,
+                    image_url=item.image_url,
+                    seller_id=item.seller_id,
+                    seller_name=item.seller_name,
+                    location=item.location,
+                    post_time=datetime.fromtimestamp(item.post_time).strftime("%Y-%m-%d %H:%M")
+                    if item.post_time
+                    else None,
+                    detail_url=item.detail_url,
+                    original_price=item.original_price,
+                    wants_count=item.wants_count,
+                    tags=item.tags or [],
                 )
                 listings.append(listing)
 
@@ -270,6 +259,92 @@ class GoofishClient:
         except Exception as e:
             log.error(f"Search failed: {e}", exc_info=True)
             return []
+
+    async def get_listing_detail(self, listing_id: str) -> dict:
+        try:
+            context = await self._ensure_browser()
+            page = context.pages[0] if context.pages else await context.new_page()
+
+            detail_result = {}
+
+            async def handle_response(response: Response):
+                if API_DETAIL_URL in response.url:
+                    try:
+                        json_data = await response.json()
+                        from core.parsers import parse_detail_json
+
+                        detail = await parse_detail_json(json_data)
+                        detail_result.update(detail)
+                        log.info(f"API拦截: 获取商品详情 {listing_id}")
+                    except Exception as e:
+                        log.error(f"Failed to parse detail API response: {e}", exc_info=True)
+
+            page.on("response", handle_response)
+
+            detail_url = f"{BASE_URL}/item?id={listing_id}"
+            await page.goto(detail_url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(2)
+
+            return detail_result
+
+        except Exception as e:
+            log.error(f"Get listing detail failed: {e}", exc_info=True)
+            return {}
+
+    async def get_seller_reputation(self, seller_id: str) -> dict:
+        try:
+            context = await self._ensure_browser()
+            page = context.pages[0] if context.pages else await context.new_page()
+
+            reputation_result = {"ratings": {}, "head": {}}
+
+            async def handle_response(response: Response):
+                if API_RATINGS_URL in response.url:
+                    try:
+                        json_data = await response.json()
+                        from core.parsers import parse_ratings_json
+
+                        ratings = await parse_ratings_json(json_data)
+                        reputation_result["ratings"] = ratings
+                        log.info(f"API拦截: 获取卖家 {seller_id} 评价数据")
+                    except Exception as e:
+                        log.error(f"Failed to parse ratings API response: {e}", exc_info=True)
+                elif "mtop.idle.web.user.page.head" in response.url:
+                    try:
+                        json_data = await response.json()
+                        from core.parsers import parse_user_head_json
+
+                        head = await parse_user_head_json(json_data)
+                        reputation_result["head"] = head
+                        log.info(f"API拦截: 获取卖家 {seller_id} 头部信息")
+                    except Exception as e:
+                        log.error(f"Failed to parse user head API response: {e}", exc_info=True)
+
+            page.on("response", handle_response)
+
+            await page.goto(
+                f"{BASE_URL}/personal?userId={seller_id}",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            await asyncio.sleep(3)
+
+            from core.parsers import calculate_reputation
+
+            return calculate_reputation(
+                reputation_result.get("ratings", {}), reputation_result.get("head", {})
+            )
+
+        except Exception as e:
+            log.error(f"Get seller reputation failed: {e}", exc_info=True)
+            return {
+                "registration_days": 0,
+                "registration_text": "未知",
+                "seller_total": 0,
+                "seller_rate": 0,
+                "total_transactions": 0,
+                "reputation_score": 0,
+            }
 
     async def check_auth(self) -> bool:
         try:

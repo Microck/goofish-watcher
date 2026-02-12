@@ -1,9 +1,7 @@
 import base64
-import json
 import logging
 from dataclasses import dataclass
-
-import httpx
+from typing import Any
 
 from config import settings
 from core.parser import Listing
@@ -26,32 +24,53 @@ class VerificationResult:
 
 class AIVerifier:
     def __init__(self):
-        self._client: httpx.AsyncClient | None = None
+        self._client: Any = None
 
-    async def _get_client(self) -> httpx.AsyncClient:
+    def _get_client(self) -> Any:
         if not self._client:
-            self._client = httpx.AsyncClient(
-                headers={
-                    "Authorization": f"Bearer {settings.nvidia_api_key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=120.0,
-            )
+            try:
+                from openai import AsyncOpenAI
+
+                self._client = AsyncOpenAI(
+                    api_key=settings.openai_api_key,
+                    base_url=settings.openai_base_url,
+                )
+                log.info(f"Initialized OpenAI client with model: {settings.openai_model_name}")
+            except ImportError:
+                log.warning("OpenAI package not installed, falling back to NVIDIA NIM")
+                try:
+                    from openai import AsyncOpenAI
+
+                    self._client = AsyncOpenAI(
+                        api_key=settings.nvidia_api_key,
+                        base_url=settings.nvidia_endpoint,
+                    )
+                    log.info(
+                        f"Initialized fallback client with NVIDIA model: {settings.nvidia_model}"
+                    )
+                except ImportError:
+                    log.error("Neither openai nor httpx available for AI verification")
+                    return None
         return self._client
 
     async def close(self) -> None:
         if self._client:
-            await self._client.aclose()
+            try:
+                await self._client.close()
+            except AttributeError:
+                pass
             self._client = None
 
     async def _fetch_image_base64(self, url: str) -> str | None:
         try:
-            client = await self._get_client()
-            resp = await client.get(url, timeout=30.0)
-            resp.raise_for_status()
-            content_type = resp.headers.get("content-type", "image/jpeg")
-            base64_data = base64.b64encode(resp.content).decode("utf-8")
-            return f"data:{content_type};base64,{base64_data}"
+            import aiohttp
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    resp.raise_for_status()
+                    content_type = resp.headers.get("content-type", "image/jpeg")
+                    base64_data = base64.b64encode(await resp.read()).decode("utf-8")
+                    return f"data:{content_type};base64,{base64_data}"
         except Exception as e:
             log.warning(f"Failed to fetch image {url}: {e}")
             return None
@@ -65,7 +84,9 @@ class AIVerifier:
         if not query.ai_enabled:
             return VerificationResult(relevant=True, confidence=1.0, reason="AI disabled")
 
-        client = await self._get_client()
+        client = self._get_client()
+        if not client:
+            return VerificationResult(relevant=True, confidence=1.0, reason="AI unavailable")
 
         description_part = ""
         if query.description:
@@ -84,58 +105,56 @@ Listing:
 Is this listing relevant to the search query?"""
 
         use_vision = bool(image_urls)
-        model = settings.nvidia_vision_model if use_vision else settings.nvidia_model
+
+        if hasattr(settings, "openai_model_name"):
+            model = settings.openai_model_name
+        else:
+            model = settings.nvidia_vision_model if use_vision else settings.nvidia_model
 
         if use_vision and image_urls:
             content_parts: list[dict] = [{"type": "text", "text": user_prompt}]
-            
+
             for url in image_urls[:3]:
                 image_data = await self._fetch_image_base64(url)
                 if image_data:
-                    content_parts.append({
-                        "type": "image_url",
-                        "image_url": {"url": image_data}
-                    })
-            
+                    content_parts.append({"type": "image_url", "image_url": {"url": image_data}})
+
             if len(content_parts) == 1:
                 use_vision = False
-                model = settings.nvidia_model
-                messages = [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ]
-            else:
-                messages = [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": content_parts},
-                ]
+                if hasattr(settings, "openai_model_name"):
+                    model = settings.openai_model_name
+                else:
+                    model = settings.nvidia_model
+
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": content_parts},
+            ]
         else:
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ]
 
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.1,
-            "max_tokens": 200,
-        }
-
         try:
-            resp = await client.post(settings.nvidia_endpoint, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+            if hasattr(client, "chat") and hasattr(client.chat, "completions"):
+                resp = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.1,
+                    max_tokens=200,
+                    response_format={"type": "json_object"},
+                )
+                content = resp.choices[0].message.content
+            else:
+                log.error(f"AI client does not support chat completions: {type(client)}")
+                return None
 
-            content = data["choices"][0]["message"]["content"]
             result = self._parse_response(content)
             return result
 
-        except httpx.HTTPError as e:
-            log.error(f"AI verification request failed: {e}")
-            return None
-        except (KeyError, IndexError, json.JSONDecodeError) as e:
-            log.error(f"Failed to parse AI response: {e}")
+        except Exception as e:
+            log.error(f"AI verification request failed: {e}", exc_info=True)
             return None
 
     def _parse_response(self, content: str) -> VerificationResult:
@@ -144,12 +163,18 @@ Is this listing relevant to the search query?"""
             lines = content.split("\n")
             content = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
 
-        data = json.loads(content)
-        return VerificationResult(
-            relevant=bool(data.get("relevant", False)),
-            confidence=float(data.get("confidence", 0.0)),
-            reason=str(data.get("reason", "")),
-        )
+        try:
+            import json
+
+            data = json.loads(content)
+            return VerificationResult(
+                relevant=bool(data.get("relevant", False)),
+                confidence=float(data.get("confidence", 0.0)),
+                reason=str(data.get("reason", "")),
+            )
+        except (json.JSONDecodeError, ValueError) as e:
+            log.error(f"Failed to parse AI response: {e}")
+            return VerificationResult(relevant=True, confidence=0.5, reason="Parse failed")
 
 
 ai_verifier = AIVerifier()
