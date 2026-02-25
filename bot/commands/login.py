@@ -1,5 +1,6 @@
 import io
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import discord
@@ -116,6 +117,35 @@ class LoginCommands(app_commands.Group):
             cookie_count = len(state.get("cookies") or []) if isinstance(state, dict) else 0
             await interaction.followup.send(
                 f"✅ Exported login state to `{out_path}` (cookies: {cookie_count})",
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                _truncate_discord_message(f"❌ Export failed: {str(e)}"),
+                ephemeral=True,
+            )
+
+    @app_commands.command(
+        name="export_state_file",
+        description="Export login state and attach xianyu_state.json (for panel import)",
+    )
+    @app_commands.describe(path="Output path saved on disk (default: ./xianyu_state.json)")
+    async def export_state_file(
+        self, interaction: discord.Interaction, path: str | None = None
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        out_path = path or "./xianyu_state.json"
+        try:
+            state = await goofish_client.export_storage_state(out_path)
+            cookie_count = len(state.get("cookies") or []) if isinstance(state, dict) else 0
+
+            p = Path(out_path)
+            file = discord.File(io.BytesIO(p.read_bytes()), filename=p.name or "xianyu_state.json")
+
+            await interaction.followup.send(
+                f"✅ Exported login state to `{out_path}` (cookies: {cookie_count}). Attached file:",
+                file=file,
                 ephemeral=True,
             )
         except Exception as e:

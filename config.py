@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     goofish_cookies_json_path: Path = Field(default=Path("./cookies.json"))
 
     # Webhook receiver (ai-goofish-monitor -> Discord DM)
-    webhook_host: str = "127.0.0.1"
+    webhook_host: str = "0.0.0.0"
     webhook_port: int = 8123
     webhook_path: str = "/webhook/ai-goofish-monitor"
     webhook_secret: str = ""
