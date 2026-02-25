@@ -19,6 +19,10 @@ logs/
 cookies.json
 cookies_backup.json
 chrome_profile/
+qr_profile/
+
+# Exported Playwright state (generated)
+xianyu_state.json
 
 # IDE
 .vscode/
@@ -38,6 +42,12 @@ env/
 debug_*.png
 web_response.html
 api_response.json
+
+# Local logs / scratch
+bot.log
+mcp-server.log
+mcp-server-error.log
+tmp/
 
 # Windows artifacts
 nul

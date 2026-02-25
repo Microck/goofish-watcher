@@ -6,8 +6,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
-      - ./cookies.json:/app/cookies.json:ro
+      - ./cookies.json:/app/cookies.json
+      - ./chrome_profile:/app/chrome_profile
     environment:
-      - DATABASE_PATH=/app/data/goofish.db
       - GOOFISH_COOKIES_JSON_PATH=/app/cookies.json

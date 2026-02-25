@@ -3,35 +3,55 @@ import json
 import logging
 import os
 import shutil
-from dataclasses import dataclass
-from datetime import datetime
+import time
 from pathlib import Path
-from typing import Optional
-from urllib.parse import urlencode
+from typing import Any, cast
 
-from playwright.async_api import async_playwright, BrowserContext, Response
+from playwright.async_api import Browser, BrowserContext, async_playwright
 
 from config import settings
 
 log = logging.getLogger(__name__)
 
-SEARCH_URL = "https://www.goofish.com/search"
 BASE_URL = "https://www.goofish.com"
-API_SEARCH_URL = "h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search"
-API_DETAIL_URL = "h5api.m.goofish.com/h5/mtop.taobao.idle.pc.detail"
-API_RATINGS_URL = "h5api.m.goofish.com/h5/mtop.idle.web.trade.rate.list"
+SEARCH_URL = "https://www.goofish.com/search"
+
+
+def _normalize_same_site(value: str | None) -> str:
+    if not value:
+        return "Lax"
+    v = value.strip().lower()
+    if v in {"none", "no_restriction", "no-restriction", "no restriction"}:
+        return "None"
+    if v == "strict":
+        return "Strict"
+    return "Lax"
+
+
+def _find_playwright_full_chromium_executable() -> str | None:
+    """Prefer full Chromium binary over headless_shell when available."""
+
+    try:
+        base = Path.home() / ".cache" / "ms-playwright"
+        candidates = sorted(base.glob("chromium-*/chrome-linux/chrome"))
+        if not candidates:
+            return None
+        return str(candidates[-1])
+    except Exception:
+        return None
 
 
 def _detect_chrome_channel() -> str | None:
     if os.environ.get("USE_BUNDLED_CHROMIUM"):
         return None
+
     chrome_paths = [
         shutil.which("google-chrome"),
         shutil.which("google-chrome-stable"),
         shutil.which("chromium"),
         shutil.which("chromium-browser"),
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        r"C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
         r"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     ]
     for path in chrome_paths:
@@ -40,33 +60,19 @@ def _detect_chrome_channel() -> str | None:
     return None
 
 
-@dataclass
-class RawListing:
-    id: str
-    title: str
-    price: float
-    image_url: str
-    seller_id: str
-    seller_name: str
-    location: str
-    post_time: str | None
-    detail_url: str
-    original_price: str | None = None
-    wants_count: int | None = None
-    tags: list[str] = None
-
-
 class GoofishClient:
-    def __init__(self, cookies_path: Optional[str] = None):
-        self.cookies_path = (
-            cookies_path or str(settings.goofish_cookies_json_path)
-            if settings.goofish_cookies_json_path
-            else None
-        )
+    def __init__(self) -> None:
+        self.cookies_path = str(settings.goofish_cookies_json_path)
         self._playwright = None
         self._context: BrowserContext | None = None
         self._lock = asyncio.Lock()
-        self._profile_initialized = False
+
+        # QR login resources (kept separate from main persistent context)
+        self._qr_playwright = None
+        self._qr_browser: Browser | None = None
+        self._qr_context: BrowserContext | None = None
+        self._qr_login_page = None
+        self._qr_lock = asyncio.Lock()
 
     async def _ensure_browser(self) -> BrowserContext:
         if self._context:
@@ -84,65 +90,94 @@ class GoofishClient:
             chrome_channel = _detect_chrome_channel()
             log.info(f"Using browser channel: {chrome_channel or 'bundled chromium'}")
 
-            self._context = (
-                await self._playwright.chromium.launch_persistent_context(
-                    user_data_dir=str(profile_dir),
-                    headless=True,
+            user_agent = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ]
+
+            if chrome_channel:
+                self._context = await self._playwright.chromium.launch_persistent_context(
+                    str(profile_dir),
                     channel=chrome_channel,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                    ],
+                    headless=True,
+                    args=args,
                     viewport={"width": 1920, "height": 1080},
                     locale="zh-CN",
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    ),
+                    user_agent=user_agent,
                 )
-                if chrome_channel
-                else None
-            )
+            else:
+                self._context = await self._playwright.chromium.launch_persistent_context(
+                    str(profile_dir),
+                    headless=True,
+                    args=args,
+                    viewport={"width": 1920, "height": 1080},
+                    locale="zh-CN",
+                    user_agent=user_agent,
+                )
 
             cookies = self._load_cookies()
-            if cookies and self._context:
-                await self._context.add_cookies(cookies)
+            if cookies:
+                await self._context.add_cookies(cookies)  # type: ignore[arg-type]
                 log.info(f"Loaded {len(cookies)} auth cookies")
 
+            # Warm up once to reduce first-request flakiness.
             page = await self._context.new_page()
             await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(2)
-            log.info("Browser warmed up")
-
-            self._profile_initialized = True
             return self._context
 
-    def _load_cookies(self) -> list:
-        if not self.cookies_path:
-            return []
-
+    def _load_cookies(self) -> list[dict[str, Any]]:
         path = Path(self.cookies_path)
         if not path.exists():
-            log.warning(f"Cookies file not found: {path}")
             return []
 
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            cookies = []
 
+            # Support Cookie-Editor export format: {"url": "...", "cookies": [...]}
+            if isinstance(data, dict) and isinstance(data.get("cookies"), list):
+                data = data["cookies"]
+
+            if not isinstance(data, list):
+                log.warning(f"Unsupported cookies format in {path}")
+                return []
+
+            cookies: list[dict[str, Any]] = []
             for c in data:
-                cookie = {
-                    "name": c.get("name"),
-                    "value": c.get("value"),
-                    "domain": c.get("domain", ".goofish.com"),
-                    "path": c.get("path", "/"),
-                    "sameSite": "Lax",
-                }
-                if cookie["name"] and cookie["value"]:
-                    cookies.append(cookie)
+                name = c.get("name")
+                value = c.get("value")
+                if not isinstance(name, str) or not name:
+                    continue
+                if not isinstance(value, str) or not value:
+                    continue
 
-            log.info(f"Loaded {len(cookies)} cookies from {path}")
+                domain = c.get("domain")
+                path = c.get("path")
+
+                cookie: dict[str, Any] = {
+                    "name": name,
+                    "value": value,
+                    "domain": domain if isinstance(domain, str) and domain else ".goofish.com",
+                    "path": path if isinstance(path, str) and path else "/",
+                    "httpOnly": bool(c.get("httpOnly", False)),
+                    "secure": bool(c.get("secure", True)),
+                    "sameSite": _normalize_same_site(c.get("sameSite")),
+                }
+
+                # Cookie-Editor uses `expirationDate` (seconds) for persistent cookies
+                if c.get("session") is False and c.get("expirationDate"):
+                    try:
+                        cookie["expires"] = float(c["expirationDate"])
+                    except Exception:
+                        pass
+
+                cookies.append(cookie)
+
             return cookies
         except Exception as e:
             log.error(f"Failed to load cookies: {e}")
@@ -156,210 +191,362 @@ class GoofishClient:
             await self._playwright.stop()
             self._playwright = None
 
-    async def export_cookies(self, output_path: str | None = None) -> list[dict]:
+        if self._qr_login_page and not self._qr_login_page.is_closed():
+            try:
+                await self._qr_login_page.close()
+            except Exception:
+                pass
+        self._qr_login_page = None
+
+        if self._qr_context:
+            try:
+                await self._qr_context.close()
+            except Exception:
+                pass
+        self._qr_context = None
+
+        if self._qr_browser:
+            try:
+                await self._qr_browser.close()
+            except Exception:
+                pass
+        self._qr_browser = None
+
+        if self._qr_playwright:
+            try:
+                await self._qr_playwright.stop()
+            except Exception:
+                pass
+        self._qr_playwright = None
+
+    async def export_storage_state(self, output_path: str) -> Any:
+        """Export Playwright storage_state (cookies + origins) for ai-goofish-monitor."""
+
         context = await self._ensure_browser()
-        cookies = await context.cookies()
-        goofish_cookies = [c for c in cookies if "goofish" in c.get("domain", "")]
 
-        if output_path:
-            Path(output_path).write_text(
-                json.dumps(goofish_cookies, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            log.info(f"Exported {len(goofish_cookies)} cookies to {output_path}")
-
-        return goofish_cookies
-
-    async def backup_cookies(self) -> None:
-        backup_path = Path(self.cookies_path).parent / "cookies_backup.json"
-        await self.export_cookies(str(backup_path))
-
-    async def refresh_cookies(self) -> None:
-        cookies = await self.export_cookies()
-        if cookies and self.cookies_path:
-            Path(self.cookies_path).write_text(
-                json.dumps(cookies, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            log.info(f"Refreshed cookies.json with {len(cookies)} current cookies")
-
-    async def keep_alive(self) -> bool:
+        # Ensure at least one navigation so storage state is populated.
         try:
-            context = await self._ensure_browser()
             page = context.pages[0] if context.pages else await context.new_page()
-            await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=20000)
-            log.debug("Session keep-alive: visited homepage")
-            return True
-        except Exception as e:
-            log.warning(f"Keep-alive failed: {e}")
-            return False
-
-    async def search(self, keyword: str, page: int = 1, page_size: int = 50) -> list[RawListing]:
-        try:
-            context = await self._ensure_browser()
-            browser_page = context.pages[0] if context.pages else await context.new_page()
-
-            search_results = []
-
-            async def handle_response(response: Response):
-                if API_SEARCH_URL in response.url:
-                    try:
-                        json_data = await response.json()
-                        from core.parsers import parse_search_results_json
-
-                        listings = await parse_search_results_json(json_data)
-                        search_results.extend(listings)
-                        log.info(f"API拦截: 捕获到 {len(listings)} 条商品数据")
-                    except Exception as e:
-                        log.error(f"Failed to parse API response: {e}", exc_info=True)
-
-            browser_page.on("response", handle_response)
-
-            params = {"q": keyword}
-            if page > 1:
-                params["page"] = str(page)
-
-            log.info(f"Searching with API拦截: keyword={keyword}, page={page}")
-
-            await browser_page.goto(
-                f"{SEARCH_URL}?{urlencode(params)}", wait_until="domcontentloaded", timeout=30000
-            )
-            await asyncio.sleep(3)
-
-            if not search_results:
-                screenshot_path = Path("debug_scan_empty.png")
-                await browser_page.screenshot(path=str(screenshot_path))
-                page_url = browser_page.url
-                log.warning(
-                    f"0 listings found! URL: {page_url}, screenshot saved to {screenshot_path}"
-                )
-
-            listings = []
-            for item in search_results[:page_size]:
-                listing = RawListing(
-                    id=item.id,
-                    title=item.title,
-                    price=item.price,
-                    image_url=item.image_url,
-                    seller_id=item.seller_id,
-                    seller_name=item.seller_name,
-                    location=item.location,
-                    post_time=datetime.fromtimestamp(item.post_time).strftime("%Y-%m-%d %H:%M")
-                    if item.post_time
-                    else None,
-                    detail_url=item.detail_url,
-                    original_price=item.original_price,
-                    wants_count=item.wants_count,
-                    tags=item.tags or [],
-                )
-                listings.append(listing)
-
-            return listings
-
-        except Exception as e:
-            log.error(f"Search failed: {e}", exc_info=True)
-            return []
-
-    async def get_listing_detail(self, listing_id: str) -> dict:
-        try:
-            context = await self._ensure_browser()
-            page = context.pages[0] if context.pages else await context.new_page()
-
-            detail_result = {}
-
-            async def handle_response(response: Response):
-                if API_DETAIL_URL in response.url:
-                    try:
-                        json_data = await response.json()
-                        from core.parsers import parse_detail_json
-
-                        detail = await parse_detail_json(json_data)
-                        detail_result.update(detail)
-                        log.info(f"API拦截: 获取商品详情 {listing_id}")
-                    except Exception as e:
-                        log.error(f"Failed to parse detail API response: {e}", exc_info=True)
-
-            page.on("response", handle_response)
-
-            detail_url = f"{BASE_URL}/item?id={listing_id}"
-            await page.goto(detail_url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(2)
+        except Exception:
+            pass
 
-            return detail_result
-
-        except Exception as e:
-            log.error(f"Get listing detail failed: {e}", exc_info=True)
-            return {}
-
-    async def get_seller_reputation(self, seller_id: str) -> dict:
-        try:
-            context = await self._ensure_browser()
-            page = context.pages[0] if context.pages else await context.new_page()
-
-            reputation_result = {"ratings": {}, "head": {}}
-
-            async def handle_response(response: Response):
-                if API_RATINGS_URL in response.url:
-                    try:
-                        json_data = await response.json()
-                        from core.parsers import parse_ratings_json
-
-                        ratings = await parse_ratings_json(json_data)
-                        reputation_result["ratings"] = ratings
-                        log.info(f"API拦截: 获取卖家 {seller_id} 评价数据")
-                    except Exception as e:
-                        log.error(f"Failed to parse ratings API response: {e}", exc_info=True)
-                elif "mtop.idle.web.user.page.head" in response.url:
-                    try:
-                        json_data = await response.json()
-                        from core.parsers import parse_user_head_json
-
-                        head = await parse_user_head_json(json_data)
-                        reputation_result["head"] = head
-                        log.info(f"API拦截: 获取卖家 {seller_id} 头部信息")
-                    except Exception as e:
-                        log.error(f"Failed to parse user head API response: {e}", exc_info=True)
-
-            page.on("response", handle_response)
-
-            await page.goto(
-                f"{BASE_URL}/personal?userId={seller_id}",
-                wait_until="domcontentloaded",
-                timeout=30000,
-            )
-            await asyncio.sleep(3)
-
-            from core.parsers import calculate_reputation
-
-            return calculate_reputation(
-                reputation_result.get("ratings", {}), reputation_result.get("head", {})
-            )
-
-        except Exception as e:
-            log.error(f"Get seller reputation failed: {e}", exc_info=True)
-            return {
-                "registration_days": 0,
-                "registration_text": "未知",
-                "seller_total": 0,
-                "seller_rate": 0,
-                "total_transactions": 0,
-                "reputation_score": 0,
-            }
+        state = cast(dict[str, Any], await context.storage_state())
+        Path(output_path).write_text(
+            json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        return state
 
     async def check_auth(self) -> bool:
         try:
             context = await self._ensure_browser()
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=20000)
+            await asyncio.sleep(3)
 
-            content = await page.content()
-            if "punish" in content.lower() or "captcha" in content.lower():
-                return False
+            login_markers = [
+                "短信登录",
+                "密码登录",
+                "手机扫码安全登录",
+                "闲鱼APP扫码",
+                "立即登录",
+            ]
+
+            for frame in page.frames:
+                try:
+                    if "passport.goofish.com" in (frame.url or ""):
+                        return False
+                except Exception:
+                    pass
+
+                try:
+                    text = await frame.inner_text("body")
+                except Exception:
+                    continue
+
+                lowered = text.lower()
+                if "punish" in lowered or "captcha" in lowered:
+                    return False
+                if "非法访问" in text:
+                    return False
+                if any(m in text for m in login_markers):
+                    return False
 
             return True
         except Exception as e:
             log.error(f"Auth check failed: {e}")
             return False
+
+    async def qr_login_start(self, keyword: str = "iphone") -> dict:
+        """Start QR login and return QR screenshot bytes (PNG)."""
+
+        try:
+            async with self._qr_lock:
+                # Tear down any previous QR session
+                if self._qr_login_page and not self._qr_login_page.is_closed():
+                    try:
+                        await self._qr_login_page.close()
+                    except Exception:
+                        pass
+                self._qr_login_page = None
+
+                if self._qr_context:
+                    try:
+                        await self._qr_context.close()
+                    except Exception:
+                        pass
+                self._qr_context = None
+
+                if self._qr_browser:
+                    try:
+                        await self._qr_browser.close()
+                    except Exception:
+                        pass
+                self._qr_browser = None
+
+                if not self._qr_playwright:
+                    self._qr_playwright = await async_playwright().start()
+
+                chrome_channel = _detect_chrome_channel()
+                chromium_exec = _find_playwright_full_chromium_executable()
+
+                ua = (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+
+                browser_args = [
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-gpu",
+                    "--disable-gpu-compositing",
+                    "--disable-software-rasterizer",
+                    "--disable-accelerated-2d-canvas",
+                    "--disable-features=VizDisplayCompositor",
+                    "--disable-site-isolation-trials",
+                    "--renderer-process-limit=1",
+                    "--no-zygote",
+                ]
+
+                launch_kwargs: dict = {
+                    "headless": True,
+                    "args": browser_args,
+                }
+                if chromium_exec:
+                    launch_kwargs["executable_path"] = chromium_exec
+                elif chrome_channel:
+                    launch_kwargs["channel"] = chrome_channel
+
+                self._qr_browser = await self._qr_playwright.chromium.launch(**launch_kwargs)
+                self._qr_context = await self._qr_browser.new_context(
+                    viewport={"width": 1920, "height": 1080},
+                    locale="zh-CN",
+                    user_agent=ua,
+                )
+
+                page = await self._qr_context.new_page()
+                self._qr_login_page = page
+
+                await page.add_init_script(
+                    """
+                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                    Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+                    Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+                    window.navigator.chrome = { runtime: {} };
+                    """
+                )
+
+            url = f"{SEARCH_URL}?q={keyword}"
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+            # Wait for the login UI to appear.
+            body_text = ""
+            for _ in range(20):
+                await asyncio.sleep(1)
+                if page.is_closed():
+                    return {"success": False, "qr_png": None, "error": "QR login page closed"}
+                try:
+                    body_text = await page.inner_text("body")
+                except Exception:
+                    continue
+                if "非法访问" in body_text:
+                    return {
+                        "success": False,
+                        "qr_png": None,
+                        "error": "Blocked by Goofish: 非法访问",
+                    }
+                if (
+                    "手机扫码安全登录" in body_text
+                    or "闲鱼APP扫码" in body_text
+                    or "短信登录" in body_text
+                ):
+                    break
+
+            dialog = None
+            try:
+                dialog_candidates = await page.query_selector_all(
+                    '[role="dialog"], [class*="modal"], [class*="login"]'
+                )
+                best = None
+                best_area = 0.0
+                for el in dialog_candidates:
+                    box = await el.bounding_box()
+                    if not box:
+                        continue
+                    area = float(box.get("width", 0)) * float(box.get("height", 0))
+                    if area > best_area:
+                        best = el
+                        best_area = area
+                if best and best_area >= 500 * 300:
+                    dialog = best
+            except Exception:
+                dialog = None
+
+            if not dialog:
+                dialog = await page.query_selector(
+                    '[role="dialog"], [class*="modal"], [class*="login"]'
+                )
+            if not dialog:
+                return {
+                    "success": False,
+                    "qr_png": None,
+                    "error": "Login dialog not found (maybe already logged in?)",
+                }
+
+            qr_png = None
+            try:
+                candidates = await dialog.query_selector_all("svg, canvas, img")
+                best = None
+                best_area = 0.0
+                for el in candidates:
+                    box = await el.bounding_box()
+                    if not box:
+                        continue
+                    w = float(box.get("width", 0))
+                    h = float(box.get("height", 0))
+                    if w < 150 or h < 150:
+                        continue
+                    ratio = w / h if h else 0
+                    if ratio < 0.8 or ratio > 1.25:
+                        continue
+                    area = w * h
+                    if area > best_area:
+                        best = el
+                        best_area = area
+                if best and best_area >= 200 * 200:
+                    qr_png = await best.screenshot(type="png")
+            except Exception:
+                qr_png = None
+
+            if not qr_png:
+                qr_png = await dialog.screenshot(type="png")
+
+            return {"success": True, "qr_png": qr_png, "error": None}
+        except Exception as e:
+            log.error(f"QR login start failed: {e}", exc_info=True)
+            return {"success": False, "qr_png": None, "error": str(e)}
+
+    async def qr_login_wait(self, timeout: int = 120) -> dict:
+        page = self._qr_login_page
+        if not page or not self._qr_context:
+            return {"success": False, "error": "No active QR login session"}
+
+        try:
+            before = await self._qr_context.cookies()
+            before_names = {c.get("name") for c in before if c.get("name")}
+
+            strong_auth_cookie_names = {"tracknick", "_nk_", "lgc", "unb"}
+            start_time = time.time()
+
+            while time.time() - start_time < timeout:
+                await asyncio.sleep(2)
+                if page.is_closed():
+                    return {"success": False, "error": "QR login page closed"}
+
+                try:
+                    text = await page.inner_text("body")
+                except Exception:
+                    continue
+
+                if "非法访问" in text:
+                    return {"success": False, "error": "Blocked by Goofish: 非法访问"}
+
+                cookies_now = await self._qr_context.cookies()
+                now_names = {c.get("name") for c in cookies_now if c.get("name")}
+                gained_names = now_names - before_names
+
+                login_modal_visible = (
+                    "短信登录" in text or "手机扫码" in text or "闲鱼APP扫码" in text
+                )
+                strong_auth = bool(now_names & strong_auth_cookie_names)
+                meaningful_cookie_change = bool(gained_names) or (
+                    len(cookies_now) > len(before) + 3
+                )
+
+                if strong_auth or (not login_modal_visible and meaningful_cookie_change):
+                    # Verify by reloading homepage and checking rendered text.
+                    try:
+                        await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
+                        await asyncio.sleep(3)
+                        verify_text = await page.inner_text("body")
+                    except Exception:
+                        verify_text = ""
+
+                    if (
+                        "短信登录" in verify_text
+                        or "手机扫码安全登录" in verify_text
+                        or "闲鱼APP扫码" in verify_text
+                    ):
+                        return {
+                            "success": False,
+                            "error": "QR scan completed but session is still not logged in",
+                        }
+
+                    try:
+                        Path(self.cookies_path).write_text(
+                            json.dumps(cookies_now, indent=2, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+                        log.info(f"Saved {len(cookies_now)} cookies to {self.cookies_path}")
+                    except Exception as e:
+                        log.warning(f"Failed to save cookies after QR login: {e}")
+
+                    # Reset main context so next usage reloads cookies.
+                    if self._context:
+                        try:
+                            await self._context.close()
+                        except Exception:
+                            pass
+                        self._context = None
+
+                    return {"success": True, "error": None}
+
+            return {"success": False, "error": "Login timed out"}
+        except Exception as e:
+            log.error(f"QR login wait failed: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
+            self._qr_login_page = None
+
+            if self._qr_context:
+                try:
+                    await self._qr_context.close()
+                except Exception:
+                    pass
+                self._qr_context = None
+
+            if self._qr_browser:
+                try:
+                    await self._qr_browser.close()
+                except Exception:
+                    pass
+                self._qr_browser = None
 
 
 goofish_client = GoofishClient()

@@ -5,6 +5,10 @@
 ```bash
 cd goofish-watcher
 pip install -e .
+
+# one-time
+python -m playwright install chromium
+
 python -m bot.main
 ```
 
@@ -17,10 +21,7 @@ python -m bot.main
 cp .env.example .env
 nano .env  # Add your credentials
 
-# 2. Add cookies.json
-# Export from browser (see USAGE.md)
-
-# 3. Build and run
+# 2. Build and run
 docker-compose up -d
 
 # 4. View logs
@@ -38,11 +39,9 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./cookies.json:/app/cookies.json:ro
+      - ./cookies.json:/app/cookies.json
+      - ./chrome_profile:/app/chrome_profile
     environment:
-      - DATABASE_PATH=/app/data/goofish.db
       - GOOFISH_COOKIES_JSON_PATH=/app/cookies.json
 ```
 
@@ -68,8 +67,10 @@ docker exec -it goofish-watcher bash
 ### Updating Cookies in Docker
 
 ```bash
-# 1. Export new cookies from browser to cookies.json
-# 2. Restart container
+# Option A: Run `/login qr` and let the bot write cookies.json
+# Option B: Replace cookies.json manually
+
+# Restart container
 docker-compose restart
 ```
 

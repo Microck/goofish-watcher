@@ -6,13 +6,10 @@ from pathlib import Path
 import discord
 from discord import app_commands
 
-from bot.cogs.watcher import WatcherCog
-from bot.commands.alert import AlertCommands
-from bot.commands.logs import LogsCommands
-from bot.commands.query import QueryCommands
-from bot.commands.stats import StatsCommands
+from bot.commands.login import LoginCommands
 from config import settings
-from db.store import store
+from core.scanner import goofish_client
+from core.webhook_receiver import WebhookReceiver
 
 log_dir = Path("./logs")
 log_dir.mkdir(exist_ok=True)
@@ -40,27 +37,20 @@ class GoofishBot(discord.Client):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
-        self.watcher: WatcherCog | None = None
+        self.webhook_receiver: WebhookReceiver | None = None
 
     async def setup_hook(self) -> None:
-        await store.connect()
-        log.info("Database connected")
+        login_commands = LoginCommands(self)
+        self.tree.add_command(login_commands)
 
-        query_commands = QueryCommands(self)
-        self.tree.add_command(query_commands)
-
-        alert_commands = AlertCommands(self)
-        self.tree.add_command(alert_commands)
-
-        stats_commands = StatsCommands(self)
-        self.tree.add_command(stats_commands)
-
-        logs_commands = LogsCommands(self)
-        self.tree.add_command(logs_commands)
-
-        self.watcher = WatcherCog(self)
-        await self.watcher.start()
-        log.info("Watcher started")
+        # Start webhook receiver (ai-goofish-monitor -> this bot -> Discord DM)
+        self.webhook_receiver = WebhookReceiver(self)
+        await self.webhook_receiver.start(
+            host=settings.webhook_host,
+            port=settings.webhook_port,
+            path=settings.webhook_path,
+            secret=settings.webhook_secret,
+        )
 
         await self.tree.sync()
         log.info("Commands synced")
@@ -69,9 +59,9 @@ class GoofishBot(discord.Client):
         log.info(f"Logged in as {self.user}")
 
     async def close(self) -> None:
-        if self.watcher:
-            await self.watcher.stop()
-        await store.close()
+        if self.webhook_receiver:
+            await self.webhook_receiver.stop()
+        await goofish_client.close()
         await super().close()
 
 

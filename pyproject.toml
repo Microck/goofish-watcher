@@ -1,20 +1,15 @@
 [project]
 name = "goofish-watcher"
 version = "0.1.0"
-description = "Discord bot that monitors Xianyu/Goofish listings with AI verification"
+description = "Small add-on: Goofish QR login + export Playwright state + Discord DM webhook forwarding"
 requires-python = ">=3.11"
 
 dependencies = [
     "discord.py>=2.3.0",
     "aiohttp>=3.9.0",
-    "apscheduler>=3.10.0",
-    "aiosqlite>=0.19.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
-    "httpx>=0.25.0",
     "playwright>=1.40.0",
-    "aiofiles>=23.2.1",
-    "openai>=1.12.0",
 ]
 
 [project.optional-dependencies]
@@ -25,7 +20,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["bot*", "core*", "db*"]
+include = ["bot*", "core*"]
 
 [tool.ruff]
 line-length = 100
@@ -35,4 +30,4 @@ target-version = "py311"
 select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
+# No async tests in this repo currently.
