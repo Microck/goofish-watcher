@@ -11,6 +11,11 @@ from config import settings
 
 log = logging.getLogger(__name__)
 
+_AUTH_EXPIRED_MESSAGE_PATTERNS = (
+    "goofish authentication has expired",
+    "update cookies.json and restart the bot",
+)
+
 
 def _truncate(text: str, limit: int = 1800) -> str:
     if len(text) <= limit:
@@ -36,6 +41,13 @@ def _extract_title_content(payload: Any) -> tuple[str, str]:
         return "Goofish Monitor", payload
 
     return "Goofish Monitor", str(payload)
+
+
+def _should_drop_notification(title: str, content: str) -> bool:
+    normalized_title = (title or "").strip().lower()
+    normalized_content = (content or "").strip().lower()
+    combined = f"{normalized_title}\n{normalized_content}"
+    return any(pattern in combined for pattern in _AUTH_EXPIRED_MESSAGE_PATTERNS)
 
 
 async def _send_discord_dm(bot: discord.Client, title: str, content: str, raw: Any) -> None:
@@ -135,6 +147,10 @@ class WebhookReceiver:
 
         raw = payload
         title, content = _extract_title_content(payload)
+
+        if _should_drop_notification(title, content):
+            log.info("Dropped auth-expired webhook notification: %s", _truncate(content, 200))
+            return web.json_response({"ok": True, "dropped": True})
 
         # Do not block webhook response on Discord API.
         asyncio.create_task(_send_discord_dm(self.bot, title, content, raw))

@@ -5,8 +5,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    ports:
+      - "127.0.0.1:8123:8123"
     volumes:
       - ./cookies.json:/app/cookies.json
+      - ./xianyu_state.json:/app/xianyu_state.json
       - ./chrome_profile:/app/chrome_profile
     environment:
       - GOOFISH_COOKIES_JSON_PATH=/app/cookies.json
