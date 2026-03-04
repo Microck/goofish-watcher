@@ -48,6 +48,101 @@ class ListingNotification:
     image_urls: list[str]
 
 
+@dataclass
+class DiscordNotificationPayload:
+    embeds: list[discord.Embed]
+    view: discord.ui.View | None
+
+
+def _dedupe_urls(urls: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for url in urls:
+        cleaned = str(url or "").strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+    return result
+
+
+class ListingCarouselView(discord.ui.View):
+    def __init__(
+        self,
+        base_embed: discord.Embed,
+        image_urls: list[str],
+        goofish_url: str,
+        superbuy_url: str,
+    ) -> None:
+        super().__init__(timeout=60 * 60)
+        self._base_embed_dict = base_embed.to_dict()
+        self._image_urls = _dedupe_urls(image_urls)
+        self._index = 0
+        self._message: discord.Message | None = None
+
+        if goofish_url:
+            self.add_item(
+                discord.ui.Button(
+                    label="Goofish",
+                    style=discord.ButtonStyle.link,
+                    url=goofish_url,
+                    row=1,
+                )
+            )
+        if superbuy_url:
+            self.add_item(
+                discord.ui.Button(
+                    label="Superbuy",
+                    style=discord.ButtonStyle.link,
+                    url=superbuy_url,
+                    row=1,
+                )
+            )
+
+        self._sync_nav_state()
+
+    def bind_message(self, message: discord.Message) -> None:
+        self._message = message
+
+    def _build_embed(self) -> discord.Embed:
+        embed = discord.Embed.from_dict(self._base_embed_dict)
+        if self._image_urls:
+            embed.set_image(url=self._image_urls[self._index])
+            if len(self._image_urls) > 1:
+                embed.set_footer(text=f"Image {self._index + 1}/{len(self._image_urls)}")
+        return embed
+
+    def _sync_nav_state(self) -> None:
+        has_multi = len(self._image_urls) > 1
+        self.prev_button.disabled = not has_multi
+        self.next_button.disabled = not has_multi
+
+    async def on_timeout(self) -> None:
+        self.prev_button.disabled = True
+        self.next_button.disabled = True
+        if self._message is not None:
+            try:
+                await self._message.edit(view=self)
+            except Exception:
+                pass
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary, row=0)
+    async def prev_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not self._image_urls:
+            await interaction.response.defer()
+            return
+        self._index = (self._index - 1) % len(self._image_urls)
+        await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary, row=0)
+    async def next_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not self._image_urls:
+            await interaction.response.defer()
+            return
+        self._index = (self._index + 1) % len(self._image_urls)
+        await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+
 def _truncate(text: str, limit: int = 1800) -> str:
     if len(text) <= limit:
         return text
@@ -476,7 +571,7 @@ async def _enrich_listing_notification(listing: ListingNotification) -> ListingN
     )
 
 
-async def _build_discord_embeds(title: str, content: str, raw: Any) -> list[discord.Embed]:
+async def _build_discord_payload(title: str, content: str, raw: Any) -> DiscordNotificationPayload:
     listing = _extract_listing_notification(raw, content)
     if listing is None:
         fallback = discord.Embed(
@@ -492,7 +587,7 @@ async def _build_discord_embeds(title: str, content: str, raw: Any) -> list[disc
             fallback.add_field(
                 name="Raw", value=f"```json\n{_truncate(raw_text, 900)}\n```", inline=False
             )
-        return [fallback]
+        return DiscordNotificationPayload(embeds=[fallback], view=None)
 
     listing = await _enrich_listing_notification(listing)
     fx_rate = await _get_cny_to_eur_rate()
@@ -529,26 +624,26 @@ async def _build_discord_embeds(title: str, content: str, raw: Any) -> list[disc
     if links:
         embed.add_field(name="Links", value="\n".join(links), inline=False)
 
+    image_candidates: list[str] = []
     if listing.image_url:
-        embed.set_image(url=listing.image_url)
+        image_candidates.append(listing.image_url)
+    image_candidates.extend(listing.image_urls)
+    image_urls = _dedupe_urls(image_candidates)
+    if image_urls:
+        embed.set_image(url=image_urls[0])
+        if len(image_urls) > 1:
+            embed.set_footer(text=f"Image 1/{len(image_urls)}")
 
-    extra_embeds: list[discord.Embed] = []
-    if listing.image_urls:
-        deduped_images: list[str] = []
-        for img in listing.image_urls:
-            if img not in deduped_images:
-                deduped_images.append(img)
+    view: discord.ui.View | None = None
+    if image_urls or listing.goofish_url or listing.superbuy_url:
+        view = ListingCarouselView(
+            base_embed=embed,
+            image_urls=image_urls,
+            goofish_url=listing.goofish_url,
+            superbuy_url=listing.superbuy_url,
+        )
 
-        # Keep total embeds <= 10. We send up to 4 listing images.
-        for idx, img in enumerate(deduped_images[:4]):
-            if idx == 0 and listing.image_url:
-                continue
-            image_embed = discord.Embed(color=discord.Color.dark_teal())
-            image_embed.set_image(url=img)
-            image_embed.set_footer(text=f"Listing image {idx + 1}")
-            extra_embeds.append(image_embed)
-
-    return [embed, *extra_embeds]
+    return DiscordNotificationPayload(embeds=[embed], view=view)
 
 
 async def _send_discord_dm(bot: discord.Client, title: str, content: str, raw: Any) -> None:
@@ -563,10 +658,12 @@ async def _send_discord_dm(bot: discord.Client, title: str, content: str, raw: A
         log.error(f"Failed to fetch Discord user {user_id}: {e}")
         return
 
-    embeds = await _build_discord_embeds(title, content, raw)
+    payload = await _build_discord_payload(title, content, raw)
 
     try:
-        await user.send(embeds=embeds)
+        sent = await user.send(embeds=payload.embeds, view=payload.view)
+        if isinstance(payload.view, ListingCarouselView):
+            payload.view.bind_message(sent)
     except discord.Forbidden:
         log.error("Cannot send DM to user (DMs disabled?)")
     except discord.HTTPException as e:
