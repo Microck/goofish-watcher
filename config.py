@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     webhook_path: str = "/webhook/ai-goofish-monitor"
     webhook_secret: str = ""
 
+    # Notification formatting
+    # Approx FX rate used for displaying converted EUR price in Discord embeds.
+    cny_to_eur_rate: float = 0.13
+    # Template for generating a Superbuy-compatible link.
+    # Must include `{url}` placeholder for the URL-encoded Goofish link.
+    superbuy_link_template: str = "https://www.superbuy.com/en/page/buy/?url={url}"
+
     # Logging
     log_level: str = "INFO"
 
