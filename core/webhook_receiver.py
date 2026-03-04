@@ -33,6 +33,38 @@ _FX_LOCK = asyncio.Lock()
 _TRANSLATION_CACHE: dict[str, str] = {}
 _TRANSLATION_CACHE_MAX = 200
 
+_DISCORD_MAX_BUTTON_URL_LEN = 512
+
+
+def _extract_goofish_item_id(url: str) -> str:
+    match = re.search(r"[?&]id=(\d+)", url or "")
+    return match.group(1) if match else ""
+
+
+def _canonical_goofish_pc_url(url: str) -> str:
+    item_id = _extract_goofish_item_id(url)
+    if not item_id:
+        return (url or "").strip()
+    return f"https://www.goofish.com/item?id={item_id}"
+
+
+def _fit_discord_button_url(url: str) -> str:
+    candidate = (url or "").strip()
+    if not candidate:
+        return ""
+    if len(candidate) <= _DISCORD_MAX_BUTTON_URL_LEN:
+        return candidate
+
+    canonical = _canonical_goofish_pc_url(candidate)
+    if len(canonical) <= _DISCORD_MAX_BUTTON_URL_LEN:
+        return canonical
+
+    short_candidate = _convert_goofish_short_url(candidate)
+    if len(short_candidate) <= _DISCORD_MAX_BUTTON_URL_LEN:
+        return short_candidate
+
+    return ""
+
 
 @dataclass
 class ListingNotification:
@@ -406,11 +438,27 @@ def _convert_goofish_short_url(url: str) -> str:
 def _build_superbuy_url(goofish_url: str) -> str:
     if not goofish_url:
         return ""
-    encoded = quote(goofish_url, safe="")
+
+    primary_source = _canonical_goofish_pc_url(goofish_url)
+    secondary_source = _convert_goofish_short_url(goofish_url)
+
     template = settings.superbuy_link_template.strip() or ""
+    if not template:
+        template = "https://www.superbuy.com/en/page/buy/?url={url}"
+
     if "{url}" in template:
-        return template.replace("{url}", encoded)
-    return template or f"https://www.superbuy.com/en/page/buy/?url={encoded}"
+        candidate_primary = template.replace("{url}", quote(primary_source, safe=""))
+        if len(candidate_primary) <= _DISCORD_MAX_BUTTON_URL_LEN:
+            return candidate_primary
+
+        candidate_secondary = template.replace("{url}", quote(secondary_source, safe=""))
+        if len(candidate_secondary) <= _DISCORD_MAX_BUTTON_URL_LEN:
+            return candidate_secondary
+
+        # Keep a non-empty URL even if too long for button; field can still show fallback text.
+        return candidate_primary
+
+    return template
 
 
 def _first_non_empty(values: list[Any]) -> str:
@@ -488,6 +536,10 @@ def _extract_listing_notification(payload: Any, content: str) -> ListingNotifica
         goofish_short_url = _convert_goofish_short_url(goofish_url)
     if not superbuy_url and goofish_url:
         superbuy_url = _build_superbuy_url(goofish_url)
+
+    goofish_url = _canonical_goofish_pc_url(goofish_url)
+    goofish_short_url = _fit_discord_button_url(goofish_short_url)
+    superbuy_url = _fit_discord_button_url(superbuy_url)
 
     if not image_url and image_urls:
         image_url = image_urls[0]
@@ -614,15 +666,18 @@ async def _build_discord_payload(title: str, content: str, raw: Any) -> DiscordN
             name="Description", value=_truncate(listing.description, 1000), inline=False
         )
 
-    links: list[str] = []
+    links_summary: list[str] = []
     if listing.goofish_url:
-        links.append(f"[Goofish (PC)]({listing.goofish_url})")
+        links_summary.append("- Goofish PC: available")
     if listing.goofish_short_url:
-        links.append(f"[Goofish (Short)]({listing.goofish_short_url})")
+        links_summary.append("- Goofish Short: available")
     if listing.superbuy_url:
-        links.append(f"[Superbuy (Converted)]({listing.superbuy_url})")
-    if links:
-        embed.add_field(name="Links", value="\n".join(links), inline=False)
+        links_summary.append("- Superbuy Converted: available")
+    if links_summary:
+        links_text = "\n".join(links_summary)
+        if len(links_text) > 1000:
+            links_text = _truncate(links_text, 1000)
+        embed.add_field(name="Links", value=links_text, inline=False)
 
     image_candidates: list[str] = []
     if listing.image_url:
@@ -661,7 +716,10 @@ async def _send_discord_dm(bot: discord.Client, title: str, content: str, raw: A
     payload = await _build_discord_payload(title, content, raw)
 
     try:
-        sent = await user.send(embeds=payload.embeds, view=payload.view)
+        if payload.view is None:
+            sent = await user.send(embeds=payload.embeds)
+        else:
+            sent = await user.send(embeds=payload.embeds, view=payload.view)
         if isinstance(payload.view, ListingCarouselView):
             payload.view.bind_message(sent)
     except discord.Forbidden:

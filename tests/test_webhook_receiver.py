@@ -57,7 +57,7 @@ def test_build_superbuy_url_contains_encoded_source() -> None:
     source = "https://www.goofish.com/item?id=9282837465&foo=bar"
     result = _build_superbuy_url(source)
     assert "superbuy.com" in result
-    assert "https%3A%2F%2Fwww.goofish.com%2Fitem%3Fid%3D9282837465%26foo%3Dbar" in result
+    assert "https%3A%2F%2Fwww.goofish.com%2Fitem%3Fid%3D9282837465" in result
 
 
 def test_extract_listing_notification_from_structured_payload() -> None:
