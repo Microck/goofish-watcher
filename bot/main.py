@@ -1,3 +1,9 @@
+"""Discord bot entry point for Goofish Watcher.
+
+Initialises the Discord client, registers slash commands,
+starts the webhook receiver, and manages the bot lifecycle.
+"""
+
 import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
@@ -33,13 +39,21 @@ log = logging.getLogger(__name__)
 
 
 class GoofishBot(discord.Client):
+    """Discord bot that bridges Goofish/Xianyu with Discord.
+
+    Manages QR-code login, webhook notifications from ai-goofish-monitor,
+    and Discord DM forwarding of listing alerts.
+    """
+
     def __init__(self):
+        """Initialise the bot with default intents and an empty command tree."""
         intents = discord.Intents.default()
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.webhook_receiver: WebhookReceiver | None = None
 
     async def setup_hook(self) -> None:
+        """Register slash commands and start the webhook HTTP receiver."""
         login_commands = LoginCommands(self)
         self.tree.add_command(login_commands)
 
@@ -56,9 +70,11 @@ class GoofishBot(discord.Client):
         log.info("Commands synced")
 
     async def on_ready(self) -> None:
+        """Log a message when the bot successfully connects."""
         log.info(f"Logged in as {self.user}")
 
     async def close(self) -> None:
+        """Gracefully shut down the webhook receiver, browser, and Discord client."""
         if self.webhook_receiver:
             await self.webhook_receiver.stop()
         await goofish_client.close()
@@ -66,6 +82,7 @@ class GoofishBot(discord.Client):
 
 
 async def main() -> None:
+    """Create and start the Discord bot."""
     bot = GoofishBot()
     async with bot:
         await bot.start(settings.discord_bot_token)

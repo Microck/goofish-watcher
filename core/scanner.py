@@ -18,6 +18,14 @@ SEARCH_URL = "https://www.goofish.com/search"
 
 
 def _normalize_same_site(value: str | None) -> str:
+    """Normalise a SameSite cookie attribute value.
+
+    Args:
+        value: Raw SameSite string (may be None).
+
+    Returns:
+        "Strict", "None", or "Lax" (default).
+    """
     if not value:
         return "Lax"
     v = value.strip().lower()
@@ -42,6 +50,11 @@ def _find_playwright_full_chromium_executable() -> str | None:
 
 
 def _detect_chrome_channel() -> str | None:
+    """Detect whether a system Chrome/Chromium installation is available.
+
+    Returns "chrome" if found so Playwright can use it instead of
+    the bundled Chromium; returns None otherwise.
+    """
     if os.environ.get("USE_BUNDLED_CHROMIUM"):
         return None
 
@@ -61,7 +74,13 @@ def _detect_chrome_channel() -> str | None:
 
 
 class GoofishClient:
+    """Playwright-based client for Goofish/Xianyu web interactions.
+
+    Manages a persistent browser context for cookie-based auth,
+    QR-code login flow, session export, and auth verification.
+    """
     def __init__(self) -> None:
+        """Initialise client paths and async locks."""
         self.cookies_path = str(settings.goofish_cookies_json_path)
         self._playwright = None
         self._context: BrowserContext | None = None
@@ -75,6 +94,11 @@ class GoofishClient:
         self._qr_lock = asyncio.Lock()
 
     async def _ensure_browser(self) -> BrowserContext:
+        """Lazily create and return a persistent Playwright browser context.
+
+        On first call, launches Chromium (system or bundled), loads cookies,
+        and warms up with a navigation to the Goofish homepage.
+        """
         if self._context:
             return self._context
 
@@ -132,6 +156,14 @@ class GoofishClient:
             return self._context
 
     def _load_cookies(self) -> list[dict[str, Any]]:
+        """Load cookies from the configured JSON file.
+
+        Supports both plain JSON arrays and the Cookie-Editor export
+        format ``{"cookies": [...]}``.
+
+        Returns:
+            List of Playwright-compatible cookie dicts, or empty list on error.
+        """
         path = Path(self.cookies_path)
         if not path.exists():
             return []
@@ -184,6 +216,7 @@ class GoofishClient:
             return []
 
     async def close(self) -> None:
+        """Shut down all browser resources (main context + QR login session)."""
         if self._context:
             await self._context.close()
             self._context = None
@@ -239,6 +272,14 @@ class GoofishClient:
         return state
 
     async def check_auth(self) -> bool:
+        """Verify whether the current session is still authenticated.
+
+        Navigates to the Goofish homepage and inspects the page for
+        login prompts, CAPTCHAs, or anti-bot messages.
+
+        Returns:
+            True if the session appears valid, False otherwise.
+        """
         try:
             context = await self._ensure_browser()
             page = context.pages[0] if context.pages else await context.new_page()
@@ -449,6 +490,14 @@ class GoofishClient:
             return {"success": False, "qr_png": None, "error": str(e)}
 
     async def qr_login_wait(self, timeout: int = 120) -> dict:
+        """Poll the QR login page until the user scans the code or times out.
+
+        Args:
+            timeout: Maximum seconds to wait for scan confirmation.
+
+        Returns:
+            Dict with "success" bool and optional "error" message.
+        """
         page = self._qr_login_page
         if not page or not self._qr_context:
             return {"success": False, "error": "No active QR login session"}
