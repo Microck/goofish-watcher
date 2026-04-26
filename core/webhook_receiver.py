@@ -37,11 +37,19 @@ _DISCORD_MAX_BUTTON_URL_LEN = 512
 
 
 def _extract_goofish_item_id(url: str) -> str:
+    """Extract the Goofish item ID from a URL query string.
+
+    Args:
+        url: A URL possibly containing ``?id=...``.
+
+    Returns:
+        The numeric item ID string, or empty string if not found."""
     match = re.search(r"[?&]id=(\d+)", url or "")
     return match.group(1) if match else ""
 
 
 def _canonical_goofish_pc_url(url: str) -> str:
+    """Build a canonical desktop Goofish item URL from any Goofish link."""
     item_id = _extract_goofish_item_id(url)
     if not item_id:
         return (url or "").strip()
@@ -49,6 +57,9 @@ def _canonical_goofish_pc_url(url: str) -> str:
 
 
 def _fit_discord_button_url(url: str) -> str:
+    """Shorten a URL to fit the Discord button URL length limit (512 chars).
+
+    Tries the original, canonical PC URL, and short URL in order."""
     candidate = (url or "").strip()
     if not candidate:
         return ""
@@ -68,6 +79,7 @@ def _fit_discord_button_url(url: str) -> str:
 
 @dataclass
 class ListingNotification:
+    """Parsed listing notification data for Discord delivery."""
     listing_title: str
     reason: str
     description: str
@@ -82,11 +94,13 @@ class ListingNotification:
 
 @dataclass
 class DiscordNotificationPayload:
+    """Container for Discord embeds and interactive view components."""
     embeds: list[discord.Embed]
     view: discord.ui.View | None
 
 
 def _dedupe_urls(urls: list[str]) -> list[str]:
+    """Remove duplicate and empty URLs while preserving order."""
     seen: set[str] = set()
     result: list[str] = []
     for url in urls:
@@ -99,6 +113,7 @@ def _dedupe_urls(urls: list[str]) -> list[str]:
 
 
 class ListingCarouselView(discord.ui.View):
+    """Discord UI view with Prev/Next buttons for browsing listing images."""
     def __init__(
         self,
         base_embed: discord.Embed,
@@ -134,9 +149,11 @@ class ListingCarouselView(discord.ui.View):
         self._sync_nav_state()
 
     def bind_message(self, message: discord.Message) -> None:
+        """Bind a Discord message to this view for in-place editing on timeout."""
         self._message = message
 
     def _build_embed(self) -> discord.Embed:
+        """Rebuild the embed with the current image index."""
         embed = discord.Embed.from_dict(self._base_embed_dict)
         if self._image_urls:
             embed.set_image(url=self._image_urls[self._index])
@@ -145,6 +162,7 @@ class ListingCarouselView(discord.ui.View):
         return embed
 
     def _sync_nav_state(self) -> None:
+        """Enable or disable Prev/Next based on image count."""
         has_multi = len(self._image_urls) > 1
         self.prev_button.disabled = not has_multi
         self.next_button.disabled = not has_multi
@@ -176,12 +194,16 @@ class ListingCarouselView(discord.ui.View):
 
 
 def _truncate(text: str, limit: int = 1800) -> str:
+    """Truncate text to limit characters with ellipsis suffix."""
     if len(text) <= limit:
         return text
     return text[: limit - 3] + "..."
 
 
 def _extract_title_content(payload: Any) -> tuple[str, str]:
+    """Extract notification title and body from a webhook payload.
+
+    Supports dict payloads with various key conventions and raw strings."""
     if isinstance(payload, dict):
         title = (
             payload.get("title")
@@ -201,6 +223,7 @@ def _extract_title_content(payload: Any) -> tuple[str, str]:
 
 
 def _should_drop_notification(title: str, content: str) -> bool:
+    """Return True if the notification is an auth-expiry advisory to suppress."""
     normalized_title = (title or "").strip().lower()
     normalized_content = (content or "").strip().lower()
     combined = f"{normalized_title}\n{normalized_content}"
@@ -208,10 +231,12 @@ def _should_drop_notification(title: str, content: str) -> bool:
 
 
 def _extract_urls(text: str) -> list[str]:
+    """Extract all HTTP(S) URLs from free-form text."""
     return [m.group(0).strip().rstrip(".,") for m in _URL_RE.finditer(text or "")]
 
 
 def _extract_value_by_labels(content: str, labels: tuple[str, ...]) -> str:
+    """Find the first line starting with any of labels and return its value."""
     for line in (content or "").splitlines():
         line = line.strip()
         lowered = line.lower()
@@ -222,6 +247,10 @@ def _extract_value_by_labels(content: str, labels: tuple[str, ...]) -> str:
 
 
 def _parse_cny_amount(value: Any) -> float | None:
+    """Parse a CNY price value from various formats (string, number, wan).
+
+    Returns:
+        Float amount, or None if parsing fails."""
     if value is None:
         return None
     if isinstance(value, (int, float)):
@@ -251,10 +280,12 @@ def _parse_cny_amount(value: Any) -> float | None:
 
 
 def _contains_cjk(text: str) -> bool:
+    """Return True if text contains CJK ideograph characters."""
     return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
 
 
 def _translate_to_english_sync(text: str) -> str:
+    """Synchronously translate Chinese text to English via Google Translate API."""
     source = (text or "").strip()
     if not source or not _contains_cjk(source):
         return source
@@ -300,6 +331,7 @@ def _translate_to_english_sync(text: str) -> str:
 
 
 async def _translate_to_english(text: str) -> str:
+    """Async wrapper around the sync translator with simple LRU cache."""
     source = (text or "").strip()
     if not source:
         return ""
@@ -322,6 +354,7 @@ async def _translate_to_english(text: str) -> str:
 
 
 def _extract_meta_content(document: str, keys: tuple[str, ...]) -> str:
+    """Extract content attribute from HTML meta tags matching any of keys."""
     lowered_keys = {k.lower() for k in keys}
 
     for tag in re.finditer(r"<meta\s+[^>]*>", document, flags=re.IGNORECASE):
@@ -339,6 +372,7 @@ def _extract_meta_content(document: str, keys: tuple[str, ...]) -> str:
 
 
 def _fetch_listing_preview_sync(url: str) -> dict[str, str]:
+    """Fetch a Goofish listing page and extract og:title, og:description, og:image."""
     request = urllib.request.Request(
         url,
         headers={
@@ -368,6 +402,9 @@ def _fetch_listing_preview_sync(url: str) -> dict[str, str]:
 
 
 async def _get_cny_to_eur_rate() -> float:
+    """Return the current CNY to EUR exchange rate, cached for 6 hours.
+
+    Falls back to settings.cny_to_eur_rate on API failure."""
     fallback = settings.cny_to_eur_rate if settings.cny_to_eur_rate > 0 else 0.13
     now = time.time()
 
@@ -396,6 +433,7 @@ async def _get_cny_to_eur_rate() -> float:
 
 
 def _fetch_ecb_daily_xml() -> str:
+    """Fetch the ECB daily eurofxref XML feed."""
     request = urllib.request.Request(
         "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml",
         headers={"User-Agent": "Mozilla/5.0", "Accept": "application/xml,text/xml,*/*"},
@@ -405,6 +443,7 @@ def _fetch_ecb_daily_xml() -> str:
 
 
 def _parse_cny_to_eur_from_ecb(xml_text: str) -> float:
+    """Parse the CNY rate from the ECB XML and convert to EUR per CNY."""
     root = ET.fromstring(xml_text)
     ns = {
         "gesmes": "http://www.gesmes.org/xml/2002-08-01",
@@ -420,6 +459,7 @@ def _parse_cny_to_eur_from_ecb(xml_text: str) -> float:
 
 
 def _convert_goofish_short_url(url: str) -> str:
+    """Build a Goofish mobile share URL from a desktop item URL."""
     if not url:
         return ""
     match = re.search(r"[?&]id=(\d+)", url)
@@ -436,6 +476,10 @@ def _convert_goofish_short_url(url: str) -> str:
 
 
 def _build_superbuy_url(goofish_url: str) -> str:
+    """Build a Superbuy proxy-buy link from a Goofish item URL.
+
+    Uses the configured superbuy_link_template and prefers the
+    canonical PC URL; falls back to the short mobile URL if too long."""
     if not goofish_url:
         return ""
 
@@ -462,6 +506,7 @@ def _build_superbuy_url(goofish_url: str) -> str:
 
 
 def _first_non_empty(values: list[Any]) -> str:
+    """Return the first non-empty string representation from values."""
     for value in values:
         if value is None:
             continue
@@ -472,6 +517,9 @@ def _first_non_empty(values: list[Any]) -> str:
 
 
 def _extract_listing_notification(payload: Any, content: str) -> ListingNotification | None:
+    """Parse a webhook payload into a ListingNotification.
+
+    Handles both JSON and form-encoded payloads with meta_ prefixed fields."""
     payload_dict = payload if isinstance(payload, dict) else {}
     raw_meta = payload_dict.get("meta")
     meta: dict[str, Any] = dict(raw_meta) if isinstance(raw_meta, dict) else {}
@@ -583,6 +631,7 @@ def _extract_listing_notification(payload: Any, content: str) -> ListingNotifica
 
 
 async def _enrich_listing_notification(listing: ListingNotification) -> ListingNotification:
+    """Enrich a listing notification with fetched preview data and English translation."""
     enriched = listing
 
     if listing.goofish_url and (
@@ -624,6 +673,10 @@ async def _enrich_listing_notification(listing: ListingNotification) -> ListingN
 
 
 async def _build_discord_payload(title: str, content: str, raw: Any) -> DiscordNotificationPayload:
+    """Build Discord embeds and views from a raw webhook payload.
+
+    If the payload contains listing data, creates a rich embed with price,
+    description, links, and an image carousel. Otherwise creates a plain embed."""
     listing = _extract_listing_notification(raw, content)
     if listing is None:
         fallback = discord.Embed(
@@ -702,6 +755,7 @@ async def _build_discord_payload(title: str, content: str, raw: Any) -> DiscordN
 
 
 async def _send_discord_dm(bot: discord.Client, title: str, content: str, raw: Any) -> None:
+    """Deliver a webhook notification as a Discord DM to the configured user."""
     user_id = settings.discord_user_id
     if not user_id:
         log.warning("DISCORD_USER_ID not set; dropping webhook notification")
@@ -730,6 +784,7 @@ async def _send_discord_dm(bot: discord.Client, title: str, content: str, raw: A
 
 @dataclass
 class WebhookReceiver:
+    """HTTP webhook receiver that forwards ai-goofish-monitor events to Discord DMs."""
     bot: discord.Client
 
     _runner: web.AppRunner | None = None
@@ -738,6 +793,7 @@ class WebhookReceiver:
     _path: str = "/webhook/ai-goofish-monitor"
 
     async def start(self, host: str, port: int, path: str, secret: str) -> None:
+        """Start the aiohttp webhook HTTP server on the given host and port."""
         if self._runner:
             return
 
@@ -756,6 +812,7 @@ class WebhookReceiver:
         log.info(f"Webhook receiver listening on http://{host}:{port}{self._path}")
 
     async def stop(self) -> None:
+        """Gracefully shut down the HTTP server."""
         if not self._runner:
             return
 
@@ -766,6 +823,10 @@ class WebhookReceiver:
             self._site = None
 
     async def _handle(self, request: web.Request) -> web.StreamResponse:
+        """Handle an incoming webhook request.
+
+        Validates the shared secret, parses JSON or form data,
+        filters auth-expiry noise, and dispatches a Discord DM."""
         if self._secret:
             header_secret = request.headers.get("x-webhook-secret") or request.headers.get(
                 "X-Webhook-Secret"

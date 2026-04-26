@@ -1,3 +1,9 @@
+"""Slash commands for Goofish login management.
+
+Provides ``/login qr``, ``/login status``, ``/login export_state``,
+and ``/login export_state_file`` commands for Discord users.
+"""
+
 import io
 import logging
 from pathlib import Path
@@ -12,12 +18,14 @@ log = logging.getLogger(__name__)
 
 
 def _truncate_discord_message(text: str, limit: int = 1900) -> str:
+    """Truncate *text* to *limit* characters, appending ellipsis if shortened."""
     if len(text) <= limit:
         return text
     return text[: limit - 3] + "..."
 
 
 def _short_error(text: str) -> str:
+    """Return the first line of *text*, stripping verbose Playwright browser logs."""
     # Playwright exceptions can include huge "Browser logs" blocks.
     return (text or "").splitlines()[0] if text else ""
 
@@ -29,7 +37,10 @@ if TYPE_CHECKING:
 @app_commands.guild_install()
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 class LoginCommands(app_commands.Group):
+    """Discord slash-command group for Goofish login operations."""
+
     def __init__(self, bot: "GoofishBot"):
+        """Initialise the command group with a reference to the parent bot."""
         super().__init__(name="login", description="Goofish login commands")
         self.bot = bot
 
@@ -109,6 +120,11 @@ class LoginCommands(app_commands.Group):
     )
     @app_commands.describe(path="Output path (default: ./xianyu_state.json)")
     async def export_state(self, interaction: discord.Interaction, path: str | None = None) -> None:
+        """Export Playwright storage state to a JSON file on disk.
+
+        The exported file can be imported by ai-goofish-monitor to reuse
+        the authenticated session.
+        """
         await interaction.response.defer(ephemeral=True)
 
         out_path = path or "./xianyu_state.json"
@@ -133,6 +149,11 @@ class LoginCommands(app_commands.Group):
     async def export_state_file(
         self, interaction: discord.Interaction, path: str | None = None
     ) -> None:
+        """Export Playwright storage state and attach the file as a Discord upload.
+
+        Useful for downloading the state file directly from Discord to import
+        into a monitoring panel.
+        """
         await interaction.response.defer(ephemeral=True)
 
         out_path = path or "./xianyu_state.json"
