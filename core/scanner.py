@@ -164,19 +164,19 @@ class GoofishClient:
         Returns:
             List of Playwright-compatible cookie dicts, or empty list on error.
         """
-        path = Path(self.cookies_path)
-        if not path.exists():
+        cookies_path = Path(self.cookies_path)
+        if not cookies_path.exists():
             return []
 
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(cookies_path.read_text(encoding="utf-8"))
 
             # Support Cookie-Editor export format: {"url": "...", "cookies": [...]}
             if isinstance(data, dict) and isinstance(data.get("cookies"), list):
                 data = data["cookies"]
 
             if not isinstance(data, list):
-                log.warning(f"Unsupported cookies format in {path}")
+                log.warning(f"Unsupported cookies format in {cookies_path}")
                 return []
 
             cookies: list[dict[str, Any]] = []
@@ -189,13 +189,13 @@ class GoofishClient:
                     continue
 
                 domain = c.get("domain")
-                path = c.get("path")
+                cookie_path = c.get("path")
 
                 cookie: dict[str, Any] = {
                     "name": name,
                     "value": value,
                     "domain": domain if isinstance(domain, str) and domain else ".goofish.com",
-                    "path": path if isinstance(path, str) and path else "/",
+                    "path": cookie_path if isinstance(cookie_path, str) and cookie_path else "/",
                     "httpOnly": bool(c.get("httpOnly", False)),
                     "secure": bool(c.get("secure", True)),
                     "sameSite": _normalize_same_site(c.get("sameSite")),
@@ -215,15 +215,8 @@ class GoofishClient:
             log.error(f"Failed to load cookies: {e}")
             return []
 
-    async def close(self) -> None:
-        """Shut down all browser resources (main context + QR login session)."""
-        if self._context:
-            await self._context.close()
-            self._context = None
-        if self._playwright:
-            await self._playwright.stop()
-            self._playwright = None
-
+    async def _teardown_qr_session(self) -> None:
+        """Clean up QR login resources (page, context, browser, playwright)."""
         if self._qr_login_page and not self._qr_login_page.is_closed():
             try:
                 await self._qr_login_page.close()
@@ -251,6 +244,17 @@ class GoofishClient:
             except Exception:
                 pass
         self._qr_playwright = None
+
+    async def close(self) -> None:
+        """Shut down all browser resources (main context + QR login session)."""
+        if self._context:
+            await self._context.close()
+            self._context = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+
+        await self._teardown_qr_session()
 
     async def export_storage_state(self, output_path: str) -> Any:
         """Export Playwright storage_state (cookies + origins) for ai-goofish-monitor."""
@@ -321,30 +325,11 @@ class GoofishClient:
 
     async def qr_login_start(self, keyword: str = "iphone") -> dict:
         """Start QR login and return QR screenshot bytes (PNG)."""
-
+        should_cleanup = True
         try:
             async with self._qr_lock:
                 # Tear down any previous QR session
-                if self._qr_login_page and not self._qr_login_page.is_closed():
-                    try:
-                        await self._qr_login_page.close()
-                    except Exception:
-                        pass
-                self._qr_login_page = None
-
-                if self._qr_context:
-                    try:
-                        await self._qr_context.close()
-                    except Exception:
-                        pass
-                self._qr_context = None
-
-                if self._qr_browser:
-                    try:
-                        await self._qr_browser.close()
-                    except Exception:
-                        pass
-                self._qr_browser = None
+                await self._teardown_qr_session()
 
                 if not self._qr_playwright:
                     self._qr_playwright = await async_playwright().start()
@@ -484,11 +469,14 @@ class GoofishClient:
 
             if not qr_png:
                 qr_png = await dialog.screenshot(type="png")
-
+            should_cleanup = False
             return {"success": True, "qr_png": qr_png, "error": None}
         except Exception as e:
             log.error(f"QR login start failed: {e}", exc_info=True)
             return {"success": False, "qr_png": None, "error": str(e)}
+        finally:
+            if should_cleanup:
+                await self._teardown_qr_session()
 
     async def qr_login_wait(self, timeout: int = 120) -> dict:
         """Poll the QR login page until the user scans the code or times out.
@@ -578,25 +566,7 @@ class GoofishClient:
             log.error(f"QR login wait failed: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
         finally:
-            try:
-                await page.close()
-            except Exception:
-                pass
-            self._qr_login_page = None
-
-            if self._qr_context:
-                try:
-                    await self._qr_context.close()
-                except Exception:
-                    pass
-                self._qr_context = None
-
-            if self._qr_browser:
-                try:
-                    await self._qr_browser.close()
-                except Exception:
-                    pass
-                self._qr_browser = None
+            await self._teardown_qr_session()
 
 
 goofish_client = GoofishClient()
