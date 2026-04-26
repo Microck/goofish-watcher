@@ -325,7 +325,7 @@ class GoofishClient:
 
     async def qr_login_start(self, keyword: str = "iphone") -> dict:
         """Start QR login and return QR screenshot bytes (PNG)."""
-
+        should_cleanup = True
         try:
             async with self._qr_lock:
                 # Tear down any previous QR session
@@ -393,14 +393,12 @@ class GoofishClient:
             for _ in range(20):
                 await asyncio.sleep(1)
                 if page.is_closed():
-                    await self._teardown_qr_session()
                     return {"success": False, "qr_png": None, "error": "QR login page closed"}
                 try:
                     body_text = await page.inner_text("body")
                 except Exception:
                     continue
                 if "非法访问" in body_text:
-                    await self._teardown_qr_session()
                     return {
                         "success": False,
                         "qr_png": None,
@@ -438,7 +436,6 @@ class GoofishClient:
                     '[role="dialog"], [class*="modal"], [class*="login"]'
                 )
             if not dialog:
-                await self._teardown_qr_session()
                 return {
                     "success": False,
                     "qr_png": None,
@@ -472,12 +469,14 @@ class GoofishClient:
 
             if not qr_png:
                 qr_png = await dialog.screenshot(type="png")
-
+            should_cleanup = False
             return {"success": True, "qr_png": qr_png, "error": None}
         except Exception as e:
             log.error(f"QR login start failed: {e}", exc_info=True)
-            await self._teardown_qr_session()
             return {"success": False, "qr_png": None, "error": str(e)}
+        finally:
+            if should_cleanup:
+                await self._teardown_qr_session()
 
     async def qr_login_wait(self, timeout: int = 120) -> dict:
         """Poll the QR login page until the user scans the code or times out.
