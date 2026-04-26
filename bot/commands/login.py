@@ -54,7 +54,8 @@ class LoginCommands(app_commands.Group):
             if not start.get("success") or not start.get("qr_png"):
                 await interaction.followup.send(
                     _truncate_discord_message(
-                        f"❌ Failed to start QR login: {_short_error(str(start.get('error', 'Unknown error')))}"
+                        f"❌ Failed to start QR login: "
+                        f"{_short_error(str(start.get('error', 'Unknown error')))}"
                     ),
                     ephemeral=True,
                 )
@@ -165,7 +166,10 @@ class LoginCommands(app_commands.Group):
             file = discord.File(io.BytesIO(p.read_bytes()), filename=p.name or "xianyu_state.json")
 
             await interaction.followup.send(
-                f"✅ Exported login state to `{out_path}` (cookies: {cookie_count}). Attached file:",
+                (
+                    f"✅ Exported login state to `{out_path}` "
+                    f"(cookies: {cookie_count}). Attached file:"
+                ),
                 file=file,
                 ephemeral=True,
             )
